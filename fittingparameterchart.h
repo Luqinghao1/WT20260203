@@ -1,11 +1,9 @@
 /*
  * 文件名: fittingparameterchart.h
  * 文件作用: 拟合参数图表管理类头文件
- * 功能描述:
- * 1. 管理拟合参数列表 (FitParameter)，包括参数名、数值、上下限、是否拟合等属性。
- * 2. 提供 QTableWidget 的显示和交互逻辑，支持双向数据同步。
- * 3. 实现参数的重置 (resetParams)、模型切换 (switchModel) 及自动范围调整。
- * 4. [新增] 支持模型 7-12 (均质模型) 的参数配置逻辑。
+ * 修改记录:
+ * 1. 新增 generateDefaultParams 静态方法，用于生成默认参数列表。
+ * 2. 新增 adjustLimits 静态方法，用于计算参数上下限。
  */
 
 #ifndef FITTINGPARAMETERCHART_H
@@ -46,7 +44,7 @@ public:
      */
     void resetParams(ModelManager::ModelType type, bool preserveStates = false);
 
-    // 切换模型（尽可能保留同名参数的数值，例如从模型1切到模型7，kf保持不变）
+    // 切换模型（尽可能保留同名参数的数值）
     void switchModel(ModelManager::ModelType newType);
 
     // 获取当前所有参数列表
@@ -57,7 +55,7 @@ public:
     // 从界面表格读取最新数值更新到内部列表
     void updateParamsFromTable();
 
-    // 根据当前参数值，智能调整上下限和步长
+    // 根据当前参数值，智能调整上下限和步长 (实例方法)
     void autoAdjustLimits();
 
     // 静态辅助：获取参数的中文名、单位等显示信息
@@ -65,6 +63,12 @@ public:
 
     // 静态辅助：获取某模型默认应该显示的参数键名列表
     static QStringList getDefaultFitKeys(ModelManager::ModelType type);
+
+    // [新增] 静态辅助：生成指定模型的默认参数列表
+    static QList<FitParameter> generateDefaultParams(ModelManager::ModelType type);
+
+    // [新增] 静态辅助：根据参数当前值计算推荐的上下限和步长
+    static void adjustLimits(QList<FitParameter>& params);
 
     // 获取表格中的原始文本（用于支持敏感性分析的逗号分隔输入）
     QMap<QString, QString> getRawParamTexts() const;

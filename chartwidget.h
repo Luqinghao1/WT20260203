@@ -64,7 +64,7 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
-    // [新增] 关闭事件处理，增加确认弹窗
+    // 关闭事件处理，增加确认弹窗
     void closeEvent(QCloseEvent *event) override;
 
 signals:

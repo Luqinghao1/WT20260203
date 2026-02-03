@@ -1,14 +1,9 @@
 /*
  * 文件名: fittingparameterchart.cpp
  * 文件作用: 拟合参数图表管理类实现文件
- * 功能描述:
- * 1. 实现了参数表格的初始化、显示刷新、数值同步。
- * 2. 实现了针对不同模型(1-12)的参数集合自动调整逻辑。
- * 3. 处理鼠标滚轮事件以快速调节参数值。
- * * 修改记录:
- * 1. [修复] 修复了 ModelManager 缺少 Model_7 等成员导致的编译错误，改为使用 ModelSolver01_06::Model_X。
- * 2. [逻辑] resetParams 和 getDefaultFitKeys 增加了对均质模型(7-12)的支持，隐藏双孔参数。
- * 3. [逻辑] 优化了井储和边界参数的通用判断逻辑。
+ * 修改记录:
+ * 1. 提取 generateDefaultParams 和 adjustLimits 为静态方法，供弹窗共用。
+ * 2. 优化了参数生成逻辑结构。
  */
 
 #include "fittingparameterchart.h"
@@ -176,11 +171,9 @@ QStringList FittingParameterChart::getDefaultFitKeys(ModelManager::ModelType typ
     keys << "kf" << "M12" << "L" << "Lf" << "nf" << "rm";
 
     // 判断是否为均质模型 (7-12)
-    // 1-6 为双孔，7-12 为均质
     bool isHomogeneous = (type >= ModelSolver01_06::Model_7 && type <= ModelSolver01_06::Model_12);
 
     if (!isHomogeneous) {
-        // 双孔模型包含这些参数
         keys << "omega1" << "omega2" << "lambda1" << "lambda2";
     }
 
@@ -188,7 +181,6 @@ QStringList FittingParameterChart::getDefaultFitKeys(ModelManager::ModelType typ
     keys << "eta12";
 
     // 判断是否考虑井储 (偶数ID为Consider)
-    // Model_1(0), Model_7(6) -> Consider
     bool hasStorage = ((int)type % 2 == 0);
     if (hasStorage) {
         keys << "C" << "S";
@@ -196,7 +188,6 @@ QStringList FittingParameterChart::getDefaultFitKeys(ModelManager::ModelType typ
 
     // 判断是否显示边界半径 re
     // 无限大边界: 1, 2, 7, 8 -> 不显示 re
-    // 封闭/定压: 3, 4, 5, 6, 9, 10, 11, 12 -> 显示 re
     bool isInfinite = (type == ModelSolver01_06::Model_1 || type == ModelSolver01_06::Model_2 ||
                        type == ModelSolver01_06::Model_7 || type == ModelSolver01_06::Model_8);
     if (!isInfinite) {
@@ -206,18 +197,10 @@ QStringList FittingParameterChart::getDefaultFitKeys(ModelManager::ModelType typ
     return keys;
 }
 
-// [核心方法] 重置参数列表
-void FittingParameterChart::resetParams(ModelManager::ModelType type, bool preserveStates)
+// [静态方法] 生成默认参数列表
+QList<FitParameter> FittingParameterChart::generateDefaultParams(ModelManager::ModelType type)
 {
-    // 1. 备份状态 (如果需要保留勾选和可见性)
-    QMap<QString, QPair<bool, bool>> stateBackup;
-    if (preserveStates) {
-        for(const auto& p : m_params) {
-            stateBackup[p.name] = qMakePair(p.isFit, p.isVisible);
-        }
-    }
-
-    m_params.clear();
+    QList<FitParameter> params;
 
     // 辅助lambda
     auto addParam = [&](QString name, double val, bool isFitDefault) {
@@ -230,10 +213,8 @@ void FittingParameterChart::resetParams(ModelManager::ModelType type, bool prese
 
         QString symbol, uniSym, unit;
         getParamDisplayInfo(p.name, p.displayName, symbol, uniSym, unit);
-        m_params.append(p);
+        params.append(p);
     };
-
-    // --- 参数添加逻辑 ---
 
     // 1. 基础物理参数
     addParam("phi", 0.05, false);
@@ -262,10 +243,8 @@ void FittingParameterChart::resetParams(ModelManager::ModelType type, bool prese
         addParam("re", 20000.0, true);
     }
 
-    // 4. 双重介质参数 (仅限模型 1-6)
-    // [修复点] 使用 ModelSolver01_06::Model_7 代替 ModelManager::Model_7
+    // 4. 双重介质参数 (1-6)
     bool isHomogeneous = (type >= ModelSolver01_06::Model_7 && type <= ModelSolver01_06::Model_12);
-
     if (!isHomogeneous) {
         addParam("omega1", 0.4, true);
         addParam("omega2", 0.08, true);
@@ -273,8 +252,7 @@ void FittingParameterChart::resetParams(ModelManager::ModelType type, bool prese
         addParam("lambda2", 1e-4, true);
     }
 
-    // 5. 井储与表皮
-    // [通用逻辑] 偶数ID为考虑井储
+    // 5. 井储与表皮 (偶数ID)
     bool hasStorage = ((int)type % 2 == 0);
     if(hasStorage) {
         addParam("C", 0.01, true);
@@ -293,27 +271,16 @@ void FittingParameterChart::resetParams(ModelManager::ModelType type, bool prese
         p.isFit = false;
         p.isVisible = true;
         p.step = 0.0;
-        m_params.append(p);
+        params.append(p);
     }
 
-    // 8. 恢复状态
-    if (preserveStates) {
-        for(auto& p : m_params) {
-            if(stateBackup.contains(p.name)) {
-                p.isFit = stateBackup[p.name].first;
-                p.isVisible = stateBackup[p.name].second;
-            }
-        }
-    }
-
-    // 9. 自动计算上下限并刷新
-    autoAdjustLimits();
-    refreshParamTable();
+    return params;
 }
 
-void FittingParameterChart::autoAdjustLimits()
+// [静态方法] 计算参数上下限
+void FittingParameterChart::adjustLimits(QList<FitParameter>& params)
 {
-    for(auto& p : m_params) {
+    for(auto& p : params) {
         if(p.name == "LfD") continue; // 辅助参数不设限
 
         double val = p.value;
@@ -376,6 +343,41 @@ void FittingParameterChart::autoAdjustLimits()
     }
 }
 
+// [核心方法] 重置参数列表
+void FittingParameterChart::resetParams(ModelManager::ModelType type, bool preserveStates)
+{
+    // 1. 备份状态
+    QMap<QString, QPair<bool, bool>> stateBackup;
+    if (preserveStates) {
+        for(const auto& p : m_params) {
+            stateBackup[p.name] = qMakePair(p.isFit, p.isVisible);
+        }
+    }
+
+    // 2. 生成默认参数
+    m_params = generateDefaultParams(type);
+
+    // 3. 恢复状态
+    if (preserveStates) {
+        for(auto& p : m_params) {
+            if(stateBackup.contains(p.name)) {
+                p.isFit = stateBackup[p.name].first;
+                p.isVisible = stateBackup[p.name].second;
+            }
+        }
+    }
+
+    // 4. 自动计算上下限并刷新
+    autoAdjustLimits();
+    refreshParamTable();
+}
+
+void FittingParameterChart::autoAdjustLimits()
+{
+    // 调用静态方法计算
+    adjustLimits(m_params);
+}
+
 QList<FitParameter> FittingParameterChart::getParameters() const { return m_params; }
 void FittingParameterChart::setParameters(const QList<FitParameter> &params) { m_params = params; refreshParamTable(); }
 
@@ -385,7 +387,7 @@ void FittingParameterChart::switchModel(ModelManager::ModelType newType)
     QMap<QString, double> oldValues;
     for(const auto& p : m_params) oldValues.insert(p.name, p.value);
 
-    // 重置为新模型的默认列表 (不保留Fit状态，因为不同模型参数集可能不同)
+    // 重置为新模型的默认列表 (不保留Fit状态)
     resetParams(newType, false);
 
     // 恢复旧值
@@ -427,7 +429,7 @@ void FittingParameterChart::updateParamsFromTable()
         QString text = itemVal->text();
         double val = 0.0;
 
-        // 支持逗号分隔的敏感性分析输入 (取第一个值作为当前基准值)
+        // 支持逗号分隔的敏感性分析输入
         if (text.contains(',') || text.contains(QChar(0xFF0C))) {
             QString firstPart = text.split(QRegularExpression("[,，]"), Qt::SkipEmptyParts).first();
             val = firstPart.toDouble();
@@ -503,7 +505,6 @@ void FittingParameterChart::addRowToTable(const FitParameter& p, int& serialNo, 
     QTableWidgetItem* valItem = new QTableWidgetItem(QString::number(p.value, 'g', 6));
     valItem->setBackground(bgColor);
     if(highlight) { QFont f = valItem->font(); f.setBold(true); valItem->setFont(f); }
-    // LfD 只读
     if (p.name == "LfD") {
         valItem->setFlags(valItem->flags() & ~Qt::ItemIsEditable);
         valItem->setForeground(QBrush(Qt::darkGray));
