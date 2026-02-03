@@ -1,6 +1,10 @@
 /*
  * 文件名: wt_modelwidget.cpp
  * 文件作用: 压裂水平井复合页岩油模型界面类实现
+ * 功能描述:
+ * 1. 界面初始化：根据模型类型动态调整参数输入框的显示/隐藏 (如内/外区参数)。
+ * 2. 求解器集成：根据 ID 范围 (0-17 或 18-35) 实例化并调用对应的数学模型。
+ * 3. 业务逻辑：处理计算请求、参数敏感性分析、结果绘图与导出。
  */
 
 #include "wt_modelwidget.h"
@@ -24,24 +28,32 @@ WT_ModelWidget::WT_ModelWidget(ModelType type, QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::WT_ModelWidget)
     , m_type(type)
+    , m_solver1(nullptr)
+    , m_solver2(nullptr)
     , m_highPrecision(true)
 {
     ui->setupUi(this);
 
-    // 初始化求解器
-    m_solver = new ModelSolver01_06(m_type);
+    // [修改] 根据 ID 范围实例化对应的求解器
+    if (m_type >= 0 && m_type <= 17) {
+        m_solver1 = new ModelSolver01_06((ModelSolver01_06::ModelType)m_type);
+    }
+    else if (m_type >= 18 && m_type <= 35) {
+        // ModelSolver19_36 的枚举从 0 开始
+        m_solver2 = new ModelSolver19_36((ModelSolver19_36::ModelType)(m_type - 18));
+    }
 
     // 初始化曲线颜色列表
     m_colorList = { Qt::red, Qt::blue, QColor(0,180,0), Qt::magenta, QColor(255,140,0), Qt::cyan };
 
-    // 设置 Splitter 初始比例 (左 20% : 右 80%)
+    // 设置 Splitter 初始比例
     QList<int> sizes;
     sizes << 240 << 960;
     ui->splitter->setSizes(sizes);
-    ui->splitter->setCollapsible(0, false); // 左侧不可折叠
+    ui->splitter->setCollapsible(0, false);
 
-    // [修改] 按钮仅显示简短名称，去除 "(点击切换)"，文字自动居中
-    ui->btnSelectModel->setText(ModelSolver01_06::getModelName(m_type, false));
+    // 设置按钮文本
+    ui->btnSelectModel->setText(getModelName());
 
     initUi();
     initChart();
@@ -53,19 +65,25 @@ WT_ModelWidget::WT_ModelWidget(ModelType type, QWidget *parent)
 
 WT_ModelWidget::~WT_ModelWidget()
 {
-    delete m_solver; // 清理求解器资源
+    if(m_solver1) delete m_solver1;
+    if(m_solver2) delete m_solver2;
     delete ui;
 }
 
 QString WT_ModelWidget::getModelName() const {
-    return ModelSolver01_06::getModelName(m_type);
+    if (m_solver1) return ModelSolver01_06::getModelName((ModelSolver01_06::ModelType)m_type, false);
+    if (m_solver2) return ModelSolver19_36::getModelName((ModelSolver19_36::ModelType)(m_type - 18), false);
+    return "未知模型";
 }
 
 // 转发给 Solver 进行计算
 WT_ModelWidget::ModelCurveData WT_ModelWidget::calculateTheoreticalCurve(const QMap<QString, double>& params, const QVector<double>& providedTime)
 {
-    if (m_solver) {
-        return m_solver->calculateTheoreticalCurve(params, providedTime);
+    if (m_solver1) {
+        return m_solver1->calculateTheoreticalCurve(params, providedTime);
+    }
+    if (m_solver2) {
+        return m_solver2->calculateTheoreticalCurve(params, providedTime);
     }
     return ModelCurveData();
 }
@@ -73,17 +91,16 @@ WT_ModelWidget::ModelCurveData WT_ModelWidget::calculateTheoreticalCurve(const Q
 void WT_ModelWidget::setHighPrecision(bool high)
 {
     m_highPrecision = high;
-    if (m_solver) m_solver->setHighPrecision(high);
+    if (m_solver1) m_solver1->setHighPrecision(high);
+    if (m_solver2) m_solver2->setHighPrecision(high);
 }
 
 void WT_ModelWidget::initUi() {
-    using MT = ModelSolver01_06::ModelType;
-
     // 1. 标签文本更新
-    if(ui->label_km) ui->label_km->setText("流度比 M12"); // kmEdit -> M12
-    if(ui->label_rmD) ui->label_rmD->setText("复合半径 rm (m)"); // rmDEdit -> rm
-    if(ui->label_reD) ui->label_reD->setText("外区半径 re (m)"); // reDEdit -> re
-    if(ui->label_cD) ui->label_cD->setText("井筒储集 C (m³/MPa)"); // cDEdit -> C (有因次)
+    if(ui->label_km) ui->label_km->setText("流度比 M12");
+    if(ui->label_rmD) ui->label_rmD->setText("复合半径 rm (m)");
+    if(ui->label_reD) ui->label_reD->setText("外区半径 re (m)");
+    if(ui->label_cD) ui->label_cD->setText("井筒储集 C (m³/MPa)");
 
     // 2. 动态添加新参数输入框 (remda2, eta12)
     QWidget* parentWidget = ui->remda1Edit->parentWidget();
@@ -110,10 +127,11 @@ void WT_ModelWidget::initUi() {
         }
     }
 
-    // 3. 控制边界参数可见性 (无限大模型隐藏外边界)
-    bool isInfinite = (m_type == MT::Model_1 || m_type == MT::Model_2 ||
-                       m_type == MT::Model_7 || m_type == MT::Model_8 ||
-                       m_type == MT::Model_13 || m_type == MT::Model_14);
+    // 3. 控制边界参数可见性 (规律: 每6个一组，前2个为无限大)
+    // 无限大: id%6 == 0 or 1
+    int rem = m_type % 6;
+    bool isInfinite = (rem == 0 || rem == 1);
+
     if (isInfinite) {
         ui->label_reD->setVisible(false);
         ui->reDEdit->setVisible(false);
@@ -123,30 +141,46 @@ void WT_ModelWidget::initUi() {
     }
 
     // 4. 控制井储表皮可见性 (偶数ID为考虑)
-    bool hasStorage = ((int)m_type % 2 == 0);
+    bool hasStorage = (m_type % 2 == 0);
     ui->label_cD->setVisible(hasStorage);
     ui->cDEdit->setVisible(hasStorage);
     ui->label_s->setVisible(hasStorage);
     ui->sEdit->setVisible(hasStorage);
 
-    // 5. 介质参数可见性 (双孔 vs 均质)
-    // 内区双孔: 1-6, 13-18
-    bool hasInnerDual = (m_type <= MT::Model_6) ||
-                        (m_type >= MT::Model_13 && m_type <= MT::Model_18);
-    // 外区双孔: 1-6
-    bool hasOuterDual = (m_type <= MT::Model_6);
+    // 5. [核心修改] 介质参数可见性配置
+    bool hasInnerParams = false;
+    bool hasOuterParams = false;
 
-    ui->label_omga1->setVisible(hasInnerDual);
-    ui->omga1Edit->setVisible(hasInnerDual);
-    ui->label_remda1->setVisible(hasInnerDual);
-    ui->remda1Edit->setVisible(hasInnerDual);
+    if (m_type <= 17) {
+        // --- Model 1-18 ---
+        // 内区双孔: 1-6 (0-5), 13-18 (12-17)
+        if (m_type <= 5 || (m_type >= 12 && m_type <= 17)) hasInnerParams = true;
+        // 外区双孔: 1-6 (0-5)
+        if (m_type <= 5) hasOuterParams = true;
+    }
+    else {
+        // --- Model 19-36 ---
+        // 内区全是夹层型，需要 w1, l1
+        hasInnerParams = true;
 
-    ui->label_omga2->setVisible(hasOuterDual);
-    ui->omga2Edit->setVisible(hasOuterDual);
+        int subId = m_type - 18;
+        // 19-24(sub 0-5): 外区夹层 -> Need
+        // 25-30(sub 6-11): 外区均质 -> No
+        // 31-36(sub 12-17): 外区双孔 -> Need
+        if (subId <= 5 || subId >= 12) hasOuterParams = true;
+    }
+
+    ui->label_omga1->setVisible(hasInnerParams);
+    ui->omga1Edit->setVisible(hasInnerParams);
+    ui->label_remda1->setVisible(hasInnerParams);
+    ui->remda1Edit->setVisible(hasInnerParams);
+
+    ui->label_omga2->setVisible(hasOuterParams);
+    ui->omga2Edit->setVisible(hasOuterParams);
 
     QLabel* labelRemda2 = parentWidget->findChild<QLabel*>("label_remda2");
-    if(labelRemda2) labelRemda2->setVisible(hasOuterDual);
-    if(editRemda2) editRemda2->setVisible(hasOuterDual);
+    if(labelRemda2) labelRemda2->setVisible(hasOuterParams);
+    if(editRemda2) editRemda2->setVisible(hasOuterParams);
 }
 
 void WT_ModelWidget::initChart() {
@@ -225,56 +259,49 @@ void WT_ModelWidget::setInputText(QLineEdit* edit, double value) {
 
 // 重置参数函数
 void WT_ModelWidget::onResetParameters() {
-    using MT = ModelSolver01_06::ModelType;
-    ModelParameter* mp = ModelParameter::instance();
+    // 调用 Manager 的统一接口获取默认参数
+    ModelManager mgr;
+    QMap<QString, double> defaults = mgr.getDefaultParameters(m_type);
 
     // 1. 基础参数
-    setInputText(ui->phiEdit, mp->getPhi());
-    setInputText(ui->hEdit, mp->getH());
-    setInputText(ui->rwEdit, 0.1);
-    setInputText(ui->muEdit, mp->getMu());
-    setInputText(ui->BEdit, mp->getB());
-    setInputText(ui->CtEdit, mp->getCt());
-    setInputText(ui->qEdit, mp->getQ());
+    setInputText(ui->phiEdit, defaults["phi"]);
+    setInputText(ui->hEdit, defaults["h"]);
+    setInputText(ui->rwEdit, defaults["rw"]);
+    setInputText(ui->muEdit, defaults["mu"]);
+    setInputText(ui->BEdit, defaults["B"]);
+    setInputText(ui->CtEdit, defaults["Ct"]);
+    setInputText(ui->qEdit, defaults["q"]);
 
     setInputText(ui->tEdit, 1000.0);
     setInputText(ui->pointsEdit, 100);
 
-    // 2. 模型参数默认值
-    setInputText(ui->kfEdit, 1e-2); // 内区渗透率
-    setInputText(ui->kmEdit, 10.0); // 流度比 M12
+    // 2. 模型参数
+    setInputText(ui->kfEdit, defaults["kf"]);
+    setInputText(ui->kmEdit, defaults["M12"]);
+    setInputText(ui->LEdit, defaults["L"]);
+    setInputText(ui->LfEdit, defaults["Lf"]);
+    setInputText(ui->nfEdit, defaults["nf"]);
+    setInputText(ui->rmDEdit, defaults["rm"]);
 
-    double valL = 1000.0;
-    setInputText(ui->LEdit, valL);
-    setInputText(ui->LfEdit, 20.0);
-    setInputText(ui->nfEdit, 4);
-    setInputText(ui->rmDEdit, valL); // 默认复合半径与 L 一致
-
-    setInputText(ui->omga1Edit, 0.4);
-    setInputText(ui->omga2Edit, 0.08);
-    setInputText(ui->remda1Edit, 1e-3);
+    setInputText(ui->omga1Edit, defaults.value("omega1", 0.0));
+    setInputText(ui->omga2Edit, defaults.value("omega2", 0.0));
+    setInputText(ui->remda1Edit, defaults.value("lambda1", 0.0));
 
     QLineEdit* editRemda2 = this->findChild<QLineEdit*>("remda2Edit");
-    if(editRemda2) setInputText(editRemda2, 1e-4);
+    if(editRemda2) setInputText(editRemda2, defaults.value("lambda2", 0.0));
 
     QLineEdit* editEta12 = this->findChild<QLineEdit*>("eta12Edit");
-    if(editEta12) setInputText(editEta12, 0.2);
+    if(editEta12) setInputText(editEta12, defaults.value("eta12", 0.2));
 
-    setInputText(ui->gamaDEdit, 0.02);
+    setInputText(ui->gamaDEdit, defaults.value("gamaD", 0.02));
 
-    // 边界参数
-    bool isInfinite = (m_type == MT::Model_1 || m_type == MT::Model_2 ||
-                       m_type == MT::Model_7 || m_type == MT::Model_8 ||
-                       m_type == MT::Model_13 || m_type == MT::Model_14);
-    if (!isInfinite) {
-        setInputText(ui->reDEdit, 20000.0);
+    if (ui->reDEdit->isVisible()) {
+        setInputText(ui->reDEdit, defaults.value("re", 20000.0));
     }
 
-    // 井储表皮
-    bool hasStorage = ((int)m_type % 2 == 0);
-    if (hasStorage) {
-        setInputText(ui->cDEdit, 0.1); // 有因次 C (m3/MPa)
-        setInputText(ui->sEdit, 0.01);
+    if (ui->cDEdit->isVisible()) {
+        setInputText(ui->cDEdit, 0.1); // CD
+        setInputText(ui->sEdit, defaults.value("S", 0.0));
     }
 }
 
@@ -395,7 +422,7 @@ void WT_ModelWidget::runCalculation() {
     if(nPoints < 5) nPoints = 5;
     double maxTime = baseParams.value("t", 1000.0);
     if(maxTime < 1e-3) maxTime = 1000.0;
-    QVector<double> t = ModelSolver01_06::generateLogTimeSteps(nPoints, -3.0, log10(maxTime));
+    QVector<double> t = ModelManager::generateLogTimeSteps(nPoints, -3.0, log10(maxTime));
 
     int iterations = isSensitivity ? sensitivityValues.size() : 1;
     iterations = qMin(iterations, (int)m_colorList.size());

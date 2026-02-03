@@ -75,6 +75,7 @@ HEADERS += \
            modelparameter.h \
            modelselect.h \
            modelsolver01-06.h \
+           modelsolver19_36.h \
            mousezoom.h \
            newprojectdialog.h \
            paramselectdialog.h \
@@ -158,6 +159,7 @@ SOURCES += \
            modelparameter.cpp \
            modelselect.cpp \
            modelsolver01-06.cpp \
+           modelsolver19_36.cpp \
            mousezoom.cpp \
            newprojectdialog.cpp \
            paramselectdialog.cpp \

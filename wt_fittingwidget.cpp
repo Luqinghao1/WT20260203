@@ -7,6 +7,7 @@
  * 3. [优化] 加载数据时自动填充物理参数到 Settings，确保保存时数据完整。
  * 4. [修改] 移除了重置参数和更新上下限的按钮槽函数，相关功能移动至参数配置弹窗。
  * 5. [新增] 增加了拟合时间范围的自定义支持 (m_userDefinedTimeMax)。
+ * 6. [新增] 支持 Model 19-36 的模型选择与切换逻辑。
  */
 
 #include "wt_fittingwidget.h"
@@ -47,13 +48,13 @@ FittingWidget::FittingWidget(QWidget *parent) :
     m_subWinLogLog(nullptr), m_subWinSemiLog(nullptr), m_subWinCartesian(nullptr),
     m_plotLogLog(nullptr), m_plotSemiLog(nullptr), m_plotCartesian(nullptr),
     m_currentModelType(ModelManager::Model_1),
-    m_obsTime(),       // 显式初始化 QVector 避免潜在警告
+    m_obsTime(),
     m_obsDeltaP(),
     m_obsDerivative(),
     m_obsRawP(),
     m_isFitting(false),
-    m_isCustomSamplingEnabled(false), // 先声明了这个
-    m_userDefinedTimeMax(-1.0)        // 后声明了这个 (根据头文件修改后的顺序)
+    m_isCustomSamplingEnabled(false),
+    m_userDefinedTimeMax(-1.0)
 {
     ui->setupUi(this);
 
@@ -226,9 +227,8 @@ void FittingWidget::initializeDefaultModel()
     m_currentModelType = ModelManager::Model_1;
 
     // [修改] 只显示模型名称，去除 "当前: " 前缀
-    ui->btn_modelSelect->setText(ModelSolver01_06::getModelName(m_currentModelType, false));
+    ui->btn_modelSelect->setText(ModelManager::getModelTypeName(m_currentModelType));
 
-    // [修改] 原 on_btnResetParams_clicked() 逻辑内联，因为该按钮已移除
     // 重置参数、加载项目级参数、隐藏不需要的参数并刷新曲线
     m_paramChart->resetParams(m_currentModelType, true);
     loadProjectParams();
@@ -480,45 +480,35 @@ void FittingWidget::on_btnImportModel_clicked() {
 
 // 槽函数：选择模型
 // 功能：弹出模型选择对话框，切换当前使用的试井模型
+// [修改] 增加对 Model 19-36 的支持
 void FittingWidget::on_btn_modelSelect_clicked() {
     ModelSelect dlg(this);
-    // 传入当前模型代码以便回显
+
+    // 传入当前模型代码以便回显，格式为 "modelwidgetX"
     int currentId = (int)m_currentModelType + 1;
     dlg.setCurrentModelCode(QString("modelwidget%1").arg(currentId));
 
     if (dlg.exec() == QDialog::Accepted) {
         QString code = dlg.getSelectedModelCode();
 
-        bool found = false;
-        ModelManager::ModelType newType = ModelManager::Model_1;
+        // [修改] 通用解析逻辑：modelwidgetX -> X
+        QString numStr = code;
+        numStr.remove("modelwidget");
+        bool ok;
+        int modelId = numStr.toInt(&ok);
 
-        // 模型映射逻辑 (1-18)
-        if (code == "modelwidget1") { newType = ModelManager::Model_1; found = true; }
-        else if (code == "modelwidget2") { newType = ModelManager::Model_2; found = true; }
-        else if (code == "modelwidget3") { newType = ModelManager::Model_3; found = true; }
-        else if (code == "modelwidget4") { newType = ModelManager::Model_4; found = true; }
-        else if (code == "modelwidget5") { newType = ModelManager::Model_5; found = true; }
-        else if (code == "modelwidget6") { newType = ModelManager::Model_6; found = true; }
-        else if (code == "modelwidget7") { newType = ModelManager::Model_7; found = true; }
-        else if (code == "modelwidget8") { newType = ModelManager::Model_8; found = true; }
-        else if (code == "modelwidget9") { newType = ModelManager::Model_9; found = true; }
-        else if (code == "modelwidget10") { newType = ModelManager::Model_10; found = true; }
-        else if (code == "modelwidget11") { newType = ModelManager::Model_11; found = true; }
-        else if (code == "modelwidget12") { newType = ModelManager::Model_12; found = true; }
-        else if (code == "modelwidget13") { newType = ModelManager::Model_13; found = true; }
-        else if (code == "modelwidget14") { newType = ModelManager::Model_14; found = true; }
-        else if (code == "modelwidget15") { newType = ModelManager::Model_15; found = true; }
-        else if (code == "modelwidget16") { newType = ModelManager::Model_16; found = true; }
-        else if (code == "modelwidget17") { newType = ModelManager::Model_17; found = true; }
-        else if (code == "modelwidget18") { newType = ModelManager::Model_18; found = true; }
+        if (ok && modelId >= 1 && modelId <= 36) {
+            // 将 ID 转换为内部枚举值 (0-35)
+            ModelManager::ModelType newType = (ModelManager::ModelType)(modelId - 1);
 
-        if (found) {
+            // 切换参数管理器中的模型
             m_paramChart->switchModel(newType);
             m_currentModelType = newType;
 
-            // [修改] 设置按钮文本为简短名称，去除 "当前: "
-            ui->btn_modelSelect->setText(ModelSolver01_06::getModelName(newType, false));
+            // 更新按钮文本
+            ui->btn_modelSelect->setText(ModelManager::getModelTypeName(newType));
 
+            // 加载默认参数及处理显示逻辑
             loadProjectParams();
             hideUnwantedParams();
             updateModelCurve(nullptr, true);
@@ -942,7 +932,7 @@ void FittingWidget::loadFittingState(const QJsonObject& root)
         m_currentModelType = (ModelManager::ModelType)type;
 
         // [修改] 只显示模型名称，去除 "当前: "
-        ui->btn_modelSelect->setText(ModelSolver01_06::getModelName(m_currentModelType, false));
+        ui->btn_modelSelect->setText(ModelManager::getModelTypeName(m_currentModelType));
     }
 
     m_paramChart->resetParams(m_currentModelType);
