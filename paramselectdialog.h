@@ -1,9 +1,10 @@
 /*
  * 文件名: paramselectdialog.h
  * 文件作用: 拟合参数选择对话框头文件
- * 功能描述:
- * 1. 声明 ParamSelectDialog 类，用于配置模型的拟合参数。
- * 2. 声明 eventFilter 用于拦截输入框的滚轮事件，防止误操作。
+ * 修改记录:
+ * 1. 构造函数增加 modelType 和 fittingTime 参数。
+ * 2. 新增 onResetParams 和 onAutoLimits 槽函数。
+ * 3. 新增 getFittingTime 方法。
  */
 
 #ifndef PARAMSELECTDIALOG_H
@@ -23,12 +24,18 @@ class ParamSelectDialog : public QDialog
     Q_OBJECT
 
 public:
-    // 构造函数：传入当前参数列表
-    explicit ParamSelectDialog(const QList<FitParameter>& params, QWidget *parent = nullptr);
+    // 构造函数：增加模型类型和当前拟合时间
+    explicit ParamSelectDialog(const QList<FitParameter>& params,
+                               ModelManager::ModelType modelType,
+                               double fitTime,
+                               QWidget *parent = nullptr);
     ~ParamSelectDialog();
 
     // 获取用户修改后的参数列表
     QList<FitParameter> getUpdatedParams() const;
+
+    // 获取修改后的拟合时间
+    double getFittingTime() const;
 
 protected:
     // 事件过滤器，用于屏蔽输入框的鼠标滚轮事件
@@ -40,6 +47,9 @@ private:
     // 暂存的参数列表副本
     QList<FitParameter> m_params;
 
+    // 当前模型类型（用于重置默认值）
+    ModelManager::ModelType m_modelType;
+
     // 初始化表格视图
     void initTable();
     // 收集数据
@@ -48,6 +58,11 @@ private:
 private slots:
     void onConfirm();
     void onCancel();
+
+    // [新增] 重置为默认参数
+    void onResetParams();
+    // [新增] 自动更新参数上下限
+    void onAutoLimits();
 };
 
 #endif // PARAMSELECTDIALOG_H

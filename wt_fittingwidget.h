@@ -1,8 +1,6 @@
 /*
  * 文件名: wt_fittingwidget.h
- * 文件作用: 试井拟合分析主界面头文件
- * 修改记录:
- * 1. 增加 onSemiLogLineMoved 槽。
+ * 修改说明: 删除了已移除按钮的槽函数声明，调整了变量顺序以消除警告。
  */
 
 #ifndef WT_FITTINGWIDGET_H
@@ -61,8 +59,8 @@ signals:
 private slots:
     void on_btnLoadData_clicked();
     void on_btnSelectParams_clicked();
-    void on_btnResetParams_clicked();
-    void on_btnUpdateLimits_clicked();
+    // [已删除] void on_btnResetParams_clicked();  <-- 必须删除这行
+    // [已删除] void on_btnUpdateLimits_clicked();  <-- 必须删除这行
     void on_btn_modelSelect_clicked();
     void onSliderWeightChanged(int value);
     void on_btnRunFit_clicked();
@@ -80,7 +78,7 @@ private slots:
     void onIterationUpdate(double err, const QMap<QString,double>& p, const QVector<double>& t, const QVector<double>& p_curve, const QVector<double>& d_curve);
     void layoutCharts();
 
-    // [新增] 响应半对数直线移动
+    // 响应半对数直线移动
     void onSemiLogLineMoved(double k, double b);
 
 private:
@@ -113,6 +111,10 @@ private:
 
     bool m_isFitting;
     bool m_isCustomSamplingEnabled;
+
+    // [修改] 将新变量放在最后，或者在 cpp 初始化列表中调整顺序
+    double m_userDefinedTimeMax;
+
     QList<SamplingInterval> m_customIntervals;
 
     void setupPlot();

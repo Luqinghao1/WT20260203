@@ -170,20 +170,6 @@ background-color: white;</string>
           <number>6</number>
          </property>
          <item>
-          <widget class="QPushButton" name="btnResetParams">
-           <property name="text">
-            <string>重置默认参数</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btnUpdateLimits">
-           <property name="text">
-            <string>参数上下限更新</string>
-           </property>
-          </widget>
-         </item>
-         <item>
           <widget class="QPushButton" name="btnImportModel">
            <property name="text">
             <string>理论模型更新</string>

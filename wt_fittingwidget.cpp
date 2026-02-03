@@ -5,6 +5,8 @@
  * 1. [修复] 修正 FittingDataSettings 成员缺失导致的编译错误。
  * 2. [修复] 修正 loadFittingState 中枚举类型名称错误 (FittingTestType -> WellTestType)。
  * 3. [优化] 加载数据时自动填充物理参数到 Settings，确保保存时数据完整。
+ * 4. [修改] 移除了重置参数和更新上下限的按钮槽函数，相关功能移动至参数配置弹窗。
+ * 5. [新增] 增加了拟合时间范围的自定义支持 (m_userDefinedTimeMax)。
  */
 
 #include "wt_fittingwidget.h"
@@ -33,6 +35,7 @@
 #include <QFileInfo>
 #include <QDateTime>
 
+// 构造函数：初始化界面及相关变量
 FittingWidget::FittingWidget(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::FittingWidget),
@@ -44,12 +47,17 @@ FittingWidget::FittingWidget(QWidget *parent) :
     m_subWinLogLog(nullptr), m_subWinSemiLog(nullptr), m_subWinCartesian(nullptr),
     m_plotLogLog(nullptr), m_plotSemiLog(nullptr), m_plotCartesian(nullptr),
     m_currentModelType(ModelManager::Model_1),
+    m_obsTime(),       // 显式初始化 QVector 避免潜在警告
+    m_obsDeltaP(),
+    m_obsDerivative(),
+    m_obsRawP(),
     m_isFitting(false),
-    m_isCustomSamplingEnabled(false)
+    m_isCustomSamplingEnabled(false), // 先声明了这个
+    m_userDefinedTimeMax(-1.0)        // 后声明了这个 (根据头文件修改后的顺序)
 {
     ui->setupUi(this);
 
-    // 清理旧布局
+    // 1. 清理旧布局：如果 plotContainer 中已有布局，先清除，防止重复添加
     if (ui->plotContainer->layout()) {
         QLayoutItem* item;
         while ((item = ui->plotContainer->layout()->takeAt(0)) != nullptr) {
@@ -57,80 +65,97 @@ FittingWidget::FittingWidget(QWidget *parent) :
         }
         delete ui->plotContainer->layout();
     }
+    // 创建新的垂直布局用于放置 MDI 区域
     QVBoxLayout* containerLayout = new QVBoxLayout(ui->plotContainer);
     containerLayout->setContentsMargins(0,0,0,0);
     containerLayout->setSpacing(0);
 
-    // 初始化 MDI 区域
+    // 2. 初始化 MDI 区域 (多文档界面区域)
     m_mdiArea = new QMdiArea(this);
-    m_mdiArea->setViewMode(QMdiArea::SubWindowView);
-    m_mdiArea->setBackground(QBrush(QColor(240, 240, 240)));
+    m_mdiArea->setViewMode(QMdiArea::SubWindowView); // 设置为子窗口模式
+    m_mdiArea->setBackground(QBrush(QColor(240, 240, 240))); // 设置背景色
     containerLayout->addWidget(m_mdiArea);
 
-    // 创建图表窗口
-    m_chartLogLog = new FittingChart1(this);
-    m_chartSemiLog = new FittingChart2(this);
-    m_chartCartesian = new FittingChart3(this);
+    // 3. 创建三个主要的图表窗口对象
+    m_chartLogLog = new FittingChart1(this);     // 双对数图
+    m_chartSemiLog = new FittingChart2(this);    // 半对数图
+    m_chartCartesian = new FittingChart3(this);  // 历史拟合图
 
+    // 获取底层的绘图控件指针 (QCustomPlot)
     m_plotLogLog = m_chartLogLog->getPlot();
     m_plotSemiLog = m_chartSemiLog->getPlot();
     m_plotCartesian = m_chartCartesian->getPlot();
 
+    // 设置图表标题
     m_chartLogLog->setTitle("双对数曲线 (Log-Log)");
     m_chartSemiLog->setTitle("半对数曲线 (Semi-Log)");
     m_chartCartesian->setTitle("历史拟合曲线 (History Plot)");
 
+    // 将图表窗口添加到 MDI 区域中
     m_subWinLogLog = m_mdiArea->addSubWindow(m_chartLogLog);
     m_subWinSemiLog = m_mdiArea->addSubWindow(m_chartSemiLog);
     m_subWinCartesian = m_mdiArea->addSubWindow(m_chartCartesian);
 
+    // 设置子窗口标题
     m_subWinLogLog->setWindowTitle("双对数图");
     m_subWinSemiLog->setWindowTitle("半对数图");
     m_subWinCartesian->setWindowTitle("标准坐标系");
 
+    // 连接导出数据的信号槽
     connect(m_chartLogLog, &FittingChart1::exportDataTriggered, this, &FittingWidget::onExportCurveData);
     connect(m_chartSemiLog, &FittingChart2::exportDataTriggered, this, &FittingWidget::onExportCurveData);
     connect(m_chartCartesian, &FittingChart3::exportDataTriggered, this, &FittingWidget::onExportCurveData);
 
-    // [修改] 连接 m_chartManager 的信号，而不是 m_chartSemiLog
+    // 连接 m_chartManager 的信号，用于响应手动拟合操作 (例如拖动半对数直线)
     connect(m_chartManager, &FittingChart::sigManualPressureUpdated, this, &FittingWidget::onSemiLogLineMoved);
 
+    // 设置分割器初始比例 (左侧控制面板 : 右侧绘图区)
     ui->splitter->setSizes(QList<int>() << 350 << 650);
-    ui->splitter->setCollapsible(0, false);
+    ui->splitter->setCollapsible(0, false); // 禁止完全折叠左侧
 
+    // 4. 初始化参数表格管理器
     m_paramChart = new FittingParameterChart(ui->tableParams, this);
 
+    // 连接参数滚轮修改信号，实现滚动参数时实时刷新曲线
     connect(m_paramChart, &FittingParameterChart::parameterChangedByWheel, this, [this](){
         updateModelCurve(nullptr, false, false);
     });
 
+    // 初始化绘图交互模式
     setupPlot();
     m_chartManager->initializeCharts(m_plotLogLog, m_plotSemiLog, m_plotCartesian);
 
+    // 注册元数据类型，以便在信号槽中传递复杂类型
     qRegisterMetaType<QMap<QString,double>>("QMap<QString,double>");
     qRegisterMetaType<ModelManager::ModelType>("ModelManager::ModelType");
     qRegisterMetaType<QVector<double>>("QVector<double>");
 
+    // 5. 连接拟合核心模块 (FittingCore) 的信号
     connect(m_core, &FittingCore::sigIterationUpdated, this, &FittingWidget::onIterationUpdate, Qt::QueuedConnection);
     connect(m_core, &FittingCore::sigProgress, ui->progressBar, &QProgressBar::setValue);
     connect(m_core, &FittingCore::sigFitFinished, this, &FittingWidget::onFitFinished);
 
+    // 连接界面控件信号
     connect(ui->sliderWeight, &QSlider::valueChanged, this, &FittingWidget::onSliderWeightChanged);
     connect(ui->btnSamplingSettings, &QPushButton::clicked, this, &FittingWidget::onOpenSamplingSettings);
 
+    // 初始化权重滑块
     ui->sliderWeight->setRange(0, 100);
     ui->sliderWeight->setValue(50);
     onSliderWeightChanged(50);
 }
 
+// 析构函数：释放 UI 资源
 FittingWidget::~FittingWidget()
 {
     delete ui;
 }
 
+// 槽函数：响应半对数直线移动
+// 功能：当用户在半对数图上拖动直线时，更新对应的地层压力 Pi 或 p* 参数
 void FittingWidget::onSemiLogLineMoved(double k, double b)
 {
-    Q_UNUSED(k);
+    Q_UNUSED(k); // 这里暂时只用到了截距 b
     // 更新参数表中的 Pi (初始地层压力)
     QList<FitParameter> params = m_paramChart->getParameters();
     bool updated = false;
@@ -146,12 +171,15 @@ void FittingWidget::onSemiLogLineMoved(double k, double b)
     }
 }
 
+// 事件处理：显示事件
+// 功能：窗口显示时重新布局图表窗口
 void FittingWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     layoutCharts();
 }
 
+// 设置模型管理器
 void FittingWidget::setModelManager(ModelManager *m)
 {
     m_modelManager = m;
@@ -160,13 +188,38 @@ void FittingWidget::setModelManager(ModelManager *m)
     initializeDefaultModel();
 }
 
+// 设置项目数据模型映射
 void FittingWidget::setProjectDataModels(const QMap<QString, QStandardItemModel *> &models)
 {
     m_dataMap = models;
 }
 
+// 设置观测数据 (简单版)
+void FittingWidget::setObservedData(const QVector<double>& t, const QVector<double>& deltaP, const QVector<double>& d)
+{
+    setObservedData(t, deltaP, d, QVector<double>());
+}
+
+// 设置观测数据 (完整版)
+// 功能：存储观测数据，传递给核心模块和图表管理器，并更新曲线显示
+void FittingWidget::setObservedData(const QVector<double>& t, const QVector<double>& deltaP,
+                                    const QVector<double>& d, const QVector<double>& rawP)
+{
+    m_obsTime = t;
+    m_obsDeltaP = deltaP;
+    m_obsDerivative = d;
+    m_obsRawP = rawP;
+
+    if (m_core) m_core->setObservedData(t, deltaP, d);
+    if (m_chartManager) m_chartManager->setObservedData(t, deltaP, d, rawP);
+
+    updateModelCurve(nullptr, true);
+}
+
+// 占位函数：更新基本参数
 void FittingWidget::updateBasicParameters() {}
 
+// 初始化默认模型
 void FittingWidget::initializeDefaultModel()
 {
     if(!m_modelManager) return;
@@ -175,21 +228,30 @@ void FittingWidget::initializeDefaultModel()
     // [修改] 只显示模型名称，去除 "当前: " 前缀
     ui->btn_modelSelect->setText(ModelSolver01_06::getModelName(m_currentModelType, false));
 
-    on_btnResetParams_clicked();
+    // [修改] 原 on_btnResetParams_clicked() 逻辑内联，因为该按钮已移除
+    // 重置参数、加载项目级参数、隐藏不需要的参数并刷新曲线
+    m_paramChart->resetParams(m_currentModelType, true);
+    loadProjectParams();
+    hideUnwantedParams();
+    updateModelCurve(nullptr, true, true);
 }
 
+// 设置图表交互模式
 void FittingWidget::setupPlot() {
     if(m_plotLogLog) m_plotLogLog->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     if(m_plotSemiLog) m_plotSemiLog->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     if(m_plotCartesian) m_plotCartesian->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
 }
 
+// 事件处理：大小改变事件
 void FittingWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     layoutCharts();
 }
 
+// 重新布局图表窗口
+// 功能：将三个图表窗口按固定比例摆放 (左半边放双对数图，右半边上下分放历史图和半对数图)
 void FittingWidget::layoutCharts()
 {
     if (!m_mdiArea || !m_subWinLogLog || !m_subWinSemiLog || !m_subWinCartesian) return;
@@ -207,25 +269,8 @@ void FittingWidget::layoutCharts()
     if (m_subWinSemiLog->isMinimized()) m_subWinSemiLog->showNormal();
 }
 
-void FittingWidget::setObservedData(const QVector<double>& t, const QVector<double>& deltaP, const QVector<double>& d)
-{
-    setObservedData(t, deltaP, d, QVector<double>());
-}
-
-void FittingWidget::setObservedData(const QVector<double>& t, const QVector<double>& deltaP,
-                                    const QVector<double>& d, const QVector<double>& rawP)
-{
-    m_obsTime = t;
-    m_obsDeltaP = deltaP;
-    m_obsDerivative = d;
-    m_obsRawP = rawP;
-
-    if (m_core) m_core->setObservedData(t, deltaP, d);
-    if (m_chartManager) m_chartManager->setObservedData(t, deltaP, d, rawP);
-
-    updateModelCurve(nullptr, true);
-}
-
+// 槽函数：加载观测数据
+// 功能：打开数据加载对话框，提取选择的数据列，进行预处理 (平滑、导数计算)，并显示
 void FittingWidget::on_btnLoadData_clicked() {
     FittingDataDialog dlg(m_dataMap, this);
     if (dlg.exec() != QDialog::Accepted) return;
@@ -242,6 +287,7 @@ void FittingWidget::on_btnLoadData_clicked() {
     int skip = settings.skipRows;
     int rows = sourceModel->rowCount();
 
+    // 遍历数据源提取时间、压力和导数
     for (int i = skip; i < rows; ++i) {
         QStandardItem* itemT = sourceModel->item(i, settings.timeColIndex);
         QStandardItem* itemP = sourceModel->item(i, settings.pressureColIndex);
@@ -271,6 +317,7 @@ void FittingWidget::on_btnLoadData_clicked() {
     QVector<double> finalDeltaP;
     double p_shutin = rawPressureData.first();
 
+    // 计算压差 deltaP
     for (double p : rawPressureData) {
         double deltaP = 0.0;
         if (settings.testType == Test_Drawdown) {
@@ -281,6 +328,7 @@ void FittingWidget::on_btnLoadData_clicked() {
         finalDeltaP.append(deltaP);
     }
 
+    // 计算或处理导数
     if (settings.derivColIndex == -1) {
         finalDeriv = PressureDerivativeCalculator::calculateBourdetDerivative(rawTime, finalDeltaP, settings.lSpacing);
         if (settings.enableSmoothing) {
@@ -295,7 +343,7 @@ void FittingWidget::on_btnLoadData_clicked() {
         }
     }
 
-    // [新增] 将项目级物理参数填充到 Settings 中，以便 Chart 保存和恢复
+    // 将项目级物理参数填充到 Settings 中，以便 Chart 保存和恢复
     ModelParameter* mp = ModelParameter::instance();
     if (mp) {
         settings.porosity = mp->getPhi();
@@ -309,9 +357,17 @@ void FittingWidget::on_btnLoadData_clicked() {
 
     m_chartManager->setSettings(settings);
     setObservedData(rawTime, finalDeltaP, finalDeriv, rawPressureData);
+
+    // [新增] 初始化拟合时间范围为实测数据最大时间
+    if (!rawTime.isEmpty()) {
+        m_userDefinedTimeMax = rawTime.last();
+    }
+
     QMessageBox::information(this, "成功", "观测数据已成功加载。");
 }
 
+// 槽函数：调节拟合权重
+// 功能：更新界面上的权重显示
 void FittingWidget::onSliderWeightChanged(int value)
 {
     double wPressure = value / 100.0;
@@ -320,28 +376,52 @@ void FittingWidget::onSliderWeightChanged(int value)
     ui->label_ValPressure->setText(QString("压差权重: %1").arg(wPressure, 0, 'f', 2));
 }
 
+// 槽函数：打开参数配置对话框
+// 功能：显示参数列表，允许用户配置拟合参数、上下限以及拟合时间范围
 void FittingWidget::on_btnSelectParams_clicked()
 {
+    // 同步表格中的最新数据到内部列表
     m_paramChart->updateParamsFromTable();
     QList<FitParameter> currentParams = m_paramChart->getParameters();
-    ParamSelectDialog dlg(currentParams, this);
+
+    // [新增] 确定传入对话框的拟合时间
+    // 如果尚未设置或为负，优先取实测数据最大值，若无实测数据则默认 10000
+    double currentTime = m_userDefinedTimeMax;
+    if (currentTime <= 0 && !m_obsTime.isEmpty()) {
+        currentTime = m_obsTime.last();
+    } else if (currentTime <= 0) {
+        currentTime = 10000.0;
+    }
+
+    // 打开参数选择对话框，传入当前参数、模型类型和拟合时间
+    ParamSelectDialog dlg(currentParams, m_currentModelType, currentTime, this);
+
     if(dlg.exec() == QDialog::Accepted) {
+        // 更新参数
         QList<FitParameter> updatedParams = dlg.getUpdatedParams();
         for(auto& p : updatedParams) {
+            // LfD 为计算参数，强制不拟合
             if(p.name == "LfD") p.isFit = false;
         }
         m_paramChart->setParameters(updatedParams);
+
+        // [新增] 获取并更新用户设定的拟合时间范围
+        m_userDefinedTimeMax = dlg.getFittingTime();
+
         hideUnwantedParams();
+        // 刷新曲线
         updateModelCurve(nullptr, false);
     }
 }
 
+// 辅助函数：隐藏不需要显示的参数
 void FittingWidget::hideUnwantedParams()
 {
     for(int i = 0; i < ui->tableParams->rowCount(); ++i) {
         QTableWidgetItem* item = ui->tableParams->item(i, 1);
         if(item) {
             QString name = item->data(Qt::UserRole).toString();
+            // 隐藏辅助参数 LfD
             if(name == "LfD") {
                 ui->tableParams->setRowHidden(i, true);
             }
@@ -349,6 +429,7 @@ void FittingWidget::hideUnwantedParams()
     }
 }
 
+// 槽函数：打开抽样设置
 void FittingWidget::onOpenSamplingSettings()
 {
     if (m_obsTime.isEmpty()) {
@@ -367,13 +448,8 @@ void FittingWidget::onOpenSamplingSettings()
     }
 }
 
-void FittingWidget::on_btnUpdateLimits_clicked()
-{
-    m_paramChart->updateParamsFromTable();
-    m_paramChart->autoAdjustLimits();
-    QMessageBox::information(this, "提示", "参数上下限及滚轮步长已根据当前值更新。");
-}
-
+// 槽函数：开始自动拟合
+// 功能：收集参数和配置，调用核心模块开始回归计算
 void FittingWidget::on_btnRunFit_clicked() {
     if(m_isFitting) return;
     if(m_obsTime.isEmpty()) {
@@ -384,7 +460,6 @@ void FittingWidget::on_btnRunFit_clicked() {
     m_isFitting = true;
     ui->btnRunFit->setEnabled(false);
     ui->btnSelectParams->setEnabled(false);
-    ui->btnUpdateLimits->setEnabled(false);
 
     ModelManager::ModelType modelType = m_currentModelType;
     QList<FitParameter> paramsCopy = m_paramChart->getParameters();
@@ -392,22 +467,19 @@ void FittingWidget::on_btnRunFit_clicked() {
     if(m_core) m_core->startFit(modelType, paramsCopy, w);
 }
 
+// 槽函数：停止拟合
 void FittingWidget::on_btnStop_clicked() {
     if(m_core) m_core->stopFit();
 }
 
+// 槽函数：理论模型更新按钮
+// 功能：强制刷新理论曲线 (和参数滚轮修改类似)
 void FittingWidget::on_btnImportModel_clicked() {
     updateModelCurve(nullptr, false, false);
 }
 
-void FittingWidget::on_btnResetParams_clicked() {
-    if(!m_modelManager) return;
-    m_paramChart->resetParams(m_currentModelType, true);
-    loadProjectParams();
-    hideUnwantedParams();
-    updateModelCurve(nullptr, true, true);
-}
-
+// 槽函数：选择模型
+// 功能：弹出模型选择对话框，切换当前使用的试井模型
 void FittingWidget::on_btn_modelSelect_clicked() {
     ModelSelect dlg(this);
     // 传入当前模型代码以便回显
@@ -456,6 +528,8 @@ void FittingWidget::on_btn_modelSelect_clicked() {
     }
 }
 
+// 辅助函数：加载项目级参数
+// 功能：从 ModelParameter 单例中读取孔隙度、厚度等物理参数同步到拟合界面
 void FittingWidget::loadProjectParams()
 {
     ModelParameter* mp = ModelParameter::instance();
@@ -473,12 +547,16 @@ void FittingWidget::loadProjectParams()
     if(changed) m_paramChart->setParameters(params);
 }
 
+// 核心函数：更新理论曲线
+// 功能：根据当前参数计算理论曲线，并支持敏感性分析模式
 void FittingWidget::updateModelCurve(const QMap<QString, double>* explicitParams, bool autoScale, bool calcError) {
     if(!m_modelManager) {
         QMessageBox::critical(this, "错误", "ModelManager 未初始化！");
         return;
     }
-    if(m_obsTime.isEmpty()) {
+    // 如果没有加载数据，也要能画出理论曲线 (空数据模式下)
+    if(m_obsTime.isEmpty() && !explicitParams && m_userDefinedTimeMax <= 0) {
+        // 如果真的没有任何时间参考，则清空
         m_chartLogLog->clearGraphs();
         m_chartSemiLog->clearGraphs();
         m_chartCartesian->clearGraphs();
@@ -487,6 +565,7 @@ void FittingWidget::updateModelCurve(const QMap<QString, double>* explicitParams
 
     ui->tableParams->clearFocus();
 
+    // 收集参数
     QMap<QString, double> rawParams;
     QString sensitivityKey = "";
     QVector<double> sensitivityValues;
@@ -509,23 +588,33 @@ void FittingWidget::updateModelCurve(const QMap<QString, double>* explicitParams
         }
     }
 
+    // 预处理参数 (转换为求解器所需格式)
     QMap<QString, double> solverParams = FittingCore::preprocessParams(rawParams, m_currentModelType);
 
+    // [修改] 生成时间步长逻辑
     QVector<double> targetT;
-    if (m_obsTime.size() > 300) {
-        double tMin = std::max(1e-5, m_obsTime.first());
-        double tMax = m_obsTime.last();
-        targetT = ModelManager::generateLogTimeSteps(300, log10(tMin), log10(tMax));
+
+    // 确定计算的最大时间
+    double tMax = 10000.0;
+    if (m_userDefinedTimeMax > 0) {
+        tMax = m_userDefinedTimeMax; // 优先使用用户设定值
     } else if (!m_obsTime.isEmpty()) {
-        targetT = m_obsTime;
-    } else {
-        for(double e = -4; e <= 4; e += 0.1) targetT.append(pow(10, e));
+        tMax = m_obsTime.last();
     }
+
+    // 确定最小时间
+    double tMin = (!m_obsTime.isEmpty()) ? std::max(1e-5, m_obsTime.first()) : 1e-4;
+
+    // 如果用户设置的时间小于实测时间起始，修正范围防止错误
+    if (tMax < tMin) tMax = tMin * 10.0;
+
+    targetT = ModelManager::generateLogTimeSteps(300, log10(tMin), log10(tMax));
 
     bool isSensitivityMode = !sensitivityKey.isEmpty();
     ui->btnRunFit->setEnabled(!isSensitivityMode);
 
     if (isSensitivityMode) {
+        // 敏感性分析模式：绘制多条曲线
         ui->label_Error->setText(QString("敏感性分析模式: %1 (%2 个值)").arg(sensitivityKey).arg(sensitivityValues.size()));
         m_chartLogLog->clearGraphs();
         m_chartManager->plotAll(QVector<double>(), QVector<double>(), QVector<double>(), false, autoScale);
@@ -548,8 +637,11 @@ void FittingWidget::updateModelCurve(const QMap<QString, double>* explicitParams
             gD->setPen(QPen(c, 2, Qt::DashLine)); gD->setName("P': "+suffix);
         }
     } else {
+        // 正常模式：绘制单条曲线
         ModelCurveData res = m_modelManager->calculateTheoreticalCurve(m_currentModelType, solverParams, targetT);
         m_chartManager->plotAll(std::get<0>(res), std::get<1>(res), std::get<2>(res), true, autoScale);
+
+        // 计算误差
         if (!m_obsTime.isEmpty() && m_core && calcError) {
             QVector<double> sampleT, sampleP, sampleD;
             m_core->getLogSampledData(m_obsTime, m_obsDeltaP, m_obsDerivative, sampleT, sampleP, sampleD);
@@ -564,15 +656,20 @@ void FittingWidget::updateModelCurve(const QMap<QString, double>* explicitParams
     m_plotCartesian->replot();
 }
 
+// 槽函数：迭代更新
+// 功能：在自动拟合过程中，接收每次迭代的结果并刷新图表
 void FittingWidget::onIterationUpdate(double err, const QMap<QString,double>& p,
                                       const QVector<double>& t, const QVector<double>& p_curve, const QVector<double>& d_curve) {
     ui->label_Error->setText(QString("误差(MSE): %1").arg(err, 0, 'e', 3));
     ui->tableParams->blockSignals(true);
+    // 更新表格中的参数值
     for(int i=0; i<ui->tableParams->rowCount(); ++i) {
         QString key = ui->tableParams->item(i, 1)->data(Qt::UserRole).toString();
         if(p.contains(key)) ui->tableParams->item(i, 2)->setText(QString::number(p[key], 'g', 5));
     }
     ui->tableParams->blockSignals(false);
+
+    // 刷新曲线
     m_chartManager->plotAll(t, p_curve, d_curve, true, false);
     if (m_isCustomSamplingEnabled && m_core) {
         QVector<double> sampleT, sampleP, sampleD;
@@ -584,14 +681,15 @@ void FittingWidget::onIterationUpdate(double err, const QMap<QString,double>& p,
     if(m_plotCartesian) m_plotCartesian->replot();
 }
 
+// 槽函数：拟合完成
 void FittingWidget::onFitFinished() {
     m_isFitting = false;
     ui->btnRunFit->setEnabled(true);
     ui->btnSelectParams->setEnabled(true);
-    ui->btnUpdateLimits->setEnabled(true);
     QMessageBox::information(this, "完成", "拟合完成。");
 }
 
+// 槽函数：导出拟合参数
 void FittingWidget::on_btnExportData_clicked() {
     m_paramChart->updateParamsFromTable();
     QList<FitParameter> params = m_paramChart->getParameters();
@@ -603,7 +701,7 @@ void FittingWidget::on_btnExportData_clicked() {
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
     QTextStream out(&file);
     if(fileName.endsWith(".csv", Qt::CaseInsensitive)) {
-        file.write("\xEF\xBB\xBF");
+        file.write("\xEF\xBB\xBF"); // BOM for UTF-8
         out << QString("参数中文名,参数英文名,拟合值,单位\n");
         for(const auto& param : params) {
             QString htmlSym, uniSym, unitStr, dummyName;
@@ -623,26 +721,33 @@ void FittingWidget::on_btnExportData_clicked() {
     QMessageBox::information(this, "完成", "参数数据已成功导出。");
 }
 
+// 槽函数：导出曲线数据
 void FittingWidget::onExportCurveData() {
     QString defaultDir = ModelParameter::instance()->getProjectPath();
     if(defaultDir.isEmpty()) defaultDir = ".";
     QString path = QFileDialog::getSaveFileName(this, "导出拟合曲线数据", defaultDir + "/FittingCurves.csv", "CSV Files (*.csv)");
     if (path.isEmpty()) return;
+
+    // 获取图表中的数据指针
     auto graphObsP = m_plotLogLog->graph(0);
     auto graphObsD = m_plotLogLog->graph(1);
     if (!graphObsP) return;
     QCPGraph *graphModP = (m_plotLogLog->graphCount() > 2) ? m_plotLogLog->graph(2) : nullptr;
     QCPGraph *graphModD = (m_plotLogLog->graphCount() > 3) ? m_plotLogLog->graph(3) : nullptr;
+
     QFile f(path);
     if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&f);
         out << "Obs_Time,Obs_DP,Obs_Deriv,Model_Time,Model_DP,Model_Deriv\n";
+
         auto itObsP = graphObsP->data()->begin();
         auto itObsD = graphObsD->data()->begin();
         auto endObsP = graphObsP->data()->end();
+
         QCPGraphDataContainer::const_iterator itModP, endModP, itModD;
         bool hasModel = (graphModP != nullptr && graphModD != nullptr);
         if(hasModel) { itModP = graphModP->data()->begin(); endModP = graphModP->data()->end(); itModD = graphModD->data()->begin(); }
+
         while (itObsP != endObsP || (hasModel && itModP != endModP)) {
             QStringList line;
             if (itObsP != endObsP) {
@@ -650,6 +755,7 @@ void FittingWidget::onExportCurveData() {
                 if (itObsD != graphObsD->data()->end()) { line << QString::number(itObsD->value, 'g', 10); ++itObsD; } else { line << ""; }
                 ++itObsP;
             } else { line << "" << "" << ""; }
+
             if (hasModel && itModP != endModP) {
                 line << QString::number(itModP->key, 'g', 10) << QString::number(itModP->value, 'g', 10);
                 if (itModD != graphModD->data()->end()) { line << QString::number(itModD->value, 'g', 10); ++itModD; } else { line << ""; }
@@ -662,6 +768,7 @@ void FittingWidget::onExportCurveData() {
     }
 }
 
+// 槽函数：导出报告
 void FittingWidget::on_btnExportReport_clicked() {
     QString wellName = "未命名井";
     QString projectFilePath = ModelParameter::instance()->getProjectFilePath();
@@ -709,6 +816,7 @@ void FittingWidget::on_btnExportReport_clicked() {
     }
 }
 
+// 辅助函数：将图表转换为 Base64 图像
 QString FittingWidget::getPlotImageBase64(MouseZoom* plot) {
     if(!plot) return "";
     QPixmap pixmap = plot->toPixmap(800, 600);
@@ -719,11 +827,13 @@ QString FittingWidget::getPlotImageBase64(MouseZoom* plot) {
     return QString::fromLatin1(byteArray.toBase64().data());
 }
 
+// 槽函数：保存拟合状态
 void FittingWidget::on_btnSaveFit_clicked()
 {
     emit sigRequestSave();
 }
 
+// 获取拟合状态的 JSON 对象
 QJsonObject FittingWidget::getJsonState() const
 {
     const_cast<FittingWidget*>(this)->m_paramChart->updateParamsFromTable();
@@ -816,9 +926,13 @@ QJsonObject FittingWidget::getJsonState() const
         root["manualPressureFitState"] = m_chartManager->getManualPressureState();
     }
 
+    // [新增] 保存用户自定义的拟合时间范围
+    root["fittingTimeMax"] = m_userDefinedTimeMax;
+
     return root;
 }
 
+// 加载拟合状态
 void FittingWidget::loadFittingState(const QJsonObject& root)
 {
     if (root.isEmpty()) return;
@@ -916,6 +1030,13 @@ void FittingWidget::loadFittingState(const QJsonObject& root)
         if(m_core) m_core->setSamplingSettings(m_customIntervals, m_isCustomSamplingEnabled);
     }
 
+    // [新增] 加载用户自定义的拟合时间范围
+    if (root.contains("fittingTimeMax")) {
+        m_userDefinedTimeMax = root["fittingTimeMax"].toDouble();
+    } else {
+        m_userDefinedTimeMax = -1.0;
+    }
+
     hideUnwantedParams();
 
     updateModelCurve(&explicitParamsMap);
@@ -955,10 +1076,11 @@ void FittingWidget::loadFittingState(const QJsonObject& root)
     }
 }
 
+// 辅助函数：解析敏感性分析输入
 QVector<double> FittingWidget::parseSensitivityValues(const QString& text) {
     QVector<double> values;
     QString cleanText = text;
-    cleanText.replace(QChar(0xFF0C), ",");
+    cleanText.replace(QChar(0xFF0C), ","); // 替换中文逗号
     QStringList parts = cleanText.split(',', Qt::SkipEmptyParts);
     for (const QString& part : parts) {
         bool ok;
