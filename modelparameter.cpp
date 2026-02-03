@@ -87,15 +87,15 @@ bool ModelParameter::loadProject(const QString& filePath)
     // 解析基础物理参数
     if (m_fullProjectData.contains("reservoir")) {
         QJsonObject res = m_fullProjectData["reservoir"].toObject();
-        m_q = res["productionRate"].toDouble(50.0);
+        m_q = res["productionRate"].toDouble(5.0);
         m_phi = res["porosity"].toDouble(0.05);
-        m_h = res["thickness"].toDouble(20.0);
+        m_h = res["thickness"].toDouble(10.0);
         m_rw = res["wellRadius"].toDouble(0.1);
     }
     if (m_fullProjectData.contains("pvt")) {
         QJsonObject pvt = m_fullProjectData["pvt"].toObject();
-        m_Ct = pvt["compressibility"].toDouble(5e-4);
-        m_mu = pvt["viscosity"].toDouble(0.5);
+        m_Ct = pvt["compressibility"].toDouble(5e-2);
+        m_mu = pvt["viscosity"].toDouble(5);
         m_B = pvt["volumeFactor"].toDouble(1.05);
     }
 
@@ -256,11 +256,11 @@ void ModelParameter::resetAllData()
 {
     // 1. 重置基础物理参数为默认值
     m_phi = 0.05;
-    m_h = 20.0;
-    m_mu = 0.5;
+    m_h = 10.0;
+    m_mu = 5;
     m_B = 1.05;
-    m_Ct = 5e-4;
-    m_q = 50.0;
+    m_Ct = 5e-2;
+    m_q = 10.0;
     m_rw = 0.1;
 
     // 2. 清空项目路径信息

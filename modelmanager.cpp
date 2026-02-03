@@ -2,15 +2,9 @@
  * 文件名: modelmanager.cpp
  * 文件作用: 模型管理类实现文件
  * 功能描述:
- * 1. 核心控制器：管理系统的所有试井模型界面和计算求解器。
- * 2. 惰性加载：仅在用户切换模型时才创建对应的界面和求解器，显著降低内存占用和启动时间。
- * 3. 默认参数策略：根据模型类型（双孔/均质、边界类型、井储类型）智能生成默认参数。
- * 4. 模型切换：处理模型选择弹窗的返回结果，并在堆栈窗口中切换显示。
- *
- * 修改记录:
- * 1. [扩容] 容器大小调整为 18，支持 Model_1 至 Model_18。
- * 2. [新增] 增加模型 13-18 (内区双孔+外区均质) 的切换逻辑。
- * 3. [优化] 默认参数生成逻辑适配内区/外区不同的介质类型。
+ * 1. 初始化并管理所有模型界面和求解器实例。
+ * 2. 实现了模型计算的分发逻辑，支持 Model 1-36。
+ * 3. 提供了智能的默认参数生成策略，适配不同模型的物理特性。
  */
 
 #include "modelmanager.h"
@@ -18,6 +12,7 @@
 #include "modelparameter.h"
 #include "wt_modelwidget.h"
 #include "modelsolver01-06.h"
+#include "modelsolver19_36.h" // 引入新求解器
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -34,16 +29,23 @@ ModelManager::ModelManager(QWidget* parent)
 
 ModelManager::~ModelManager()
 {
-    // 清理求解器内存
-    // WT_ModelWidget 作为 QWidget 子类，会由 Qt 父对象机制自动清理
-    for(auto* s : m_solvers) {
+    // 清理求解器资源
+    // 组1: Model 1-18
+    for(auto* s : m_solversGroup1) {
         if(s) delete s;
     }
-    m_solvers.clear();
+    m_solversGroup1.clear();
+
+    // 组2: Model 19-36
+    for(auto* s : m_solversGroup2) {
+        if(s) delete s;
+    }
+    m_solversGroup2.clear();
+
+    // 界面 Widget 由 Qt 父子对象机制管理，只需清空容器
     m_modelWidgets.clear();
 }
 
-// 初始化模型体系
 void ModelManager::initializeModels(QWidget* parentWidget)
 {
     if (!parentWidget) return;
@@ -51,19 +53,20 @@ void ModelManager::initializeModels(QWidget* parentWidget)
 
     m_modelStack = new QStackedWidget(m_mainWidget);
 
-    // [关键修改] 初始化容器大小为 18，以支持所有模型 (1-18)
-    // 初始填充 nullptr，实现惰性加载
-    m_modelWidgets.clear();
-    m_modelWidgets.resize(18);
-    m_modelWidgets.fill(nullptr);
+    // [修改] 扩容容器以支持 36 个模型
+    m_modelWidgets.resize(36);
+    m_modelWidgets.fill(nullptr); // 初始为空，惰性加载
 
-    m_solvers.clear();
-    m_solvers.resize(18);
-    m_solvers.fill(nullptr);
+    // 初始化求解器容器
+    m_solversGroup1.resize(18);
+    m_solversGroup1.fill(nullptr);
+
+    m_solversGroup2.resize(18);
+    m_solversGroup2.fill(nullptr);
 
     m_mainWidget->layout()->addWidget(m_modelStack);
 
-    // 默认加载第一个模型，此时才会触发创建 Model_1 的界面
+    // 默认加载第一个模型
     switchToModel(Model_1);
 
     if (parentWidget->layout()) parentWidget->layout()->addWidget(m_mainWidget);
@@ -83,11 +86,11 @@ void ModelManager::createMainWidget()
     m_mainWidget->setLayout(mainLayout);
 }
 
-// [核心] 确保 Widget 存在的辅助函数 (惰性工厂模式)
+// 确保指定类型的界面 Widget 已创建 (惰性工厂模式)
 WT_ModelWidget* ModelManager::ensureWidget(ModelType type)
 {
     int index = (int)type;
-    // 安全检查防止越界
+    // 边界检查
     if (index < 0 || index >= m_modelWidgets.size()) return nullptr;
 
     // 如果尚未创建，则立即创建
@@ -105,17 +108,25 @@ WT_ModelWidget* ModelManager::ensureWidget(ModelType type)
     return m_modelWidgets[index];
 }
 
-// [核心] 确保 Solver 存在的辅助函数
-ModelSolver01_06* ModelManager::ensureSolver(ModelType type)
+// [修改] 获取组1求解器 (Model 1-18)
+ModelSolver01_06* ModelManager::ensureSolverGroup1(int index)
 {
-    int index = (int)type;
-    if (index < 0 || index >= m_solvers.size()) return nullptr;
-
-    if (m_solvers[index] == nullptr) {
-        ModelSolver01_06* solver = new ModelSolver01_06(type);
-        m_solvers[index] = solver;
+    if (index < 0 || index >= m_solversGroup1.size()) return nullptr;
+    if (m_solversGroup1[index] == nullptr) {
+        m_solversGroup1[index] = new ModelSolver01_06((ModelSolver01_06::ModelType)index);
     }
-    return m_solvers[index];
+    return m_solversGroup1[index];
+}
+
+// [新增] 获取组2求解器 (Model 19-36)
+ModelSolver19_36* ModelManager::ensureSolverGroup2(int index)
+{
+    if (index < 0 || index >= m_solversGroup2.size()) return nullptr;
+    if (m_solversGroup2[index] == nullptr) {
+        // ModelSolver19_36 内部枚举从 0 开始，对应外部 ID 18
+        m_solversGroup2[index] = new ModelSolver19_36((ModelSolver19_36::ModelType)index);
+    }
+    return m_solversGroup2[index];
 }
 
 // 切换当前显示的模型
@@ -134,79 +145,72 @@ void ModelManager::switchToModel(ModelType modelType)
     emit modelSwitched(modelType, old);
 }
 
+// [核心逻辑] 统一计算接口，根据 ID 分发给不同的求解器
+ModelCurveData ModelManager::calculateTheoreticalCurve(ModelType type,
+                                                       const QMap<QString, double>& params,
+                                                       const QVector<double>& providedTime)
+{
+    int id = (int)type;
+
+    // Group 1: Model 1-18 (ID 0-17)
+    if (id >= 0 && id <= 17) {
+        ModelSolver01_06* solver = ensureSolverGroup1(id);
+        if (solver) return solver->calculateTheoreticalCurve(params, providedTime);
+    }
+    // Group 2: Model 19-36 (ID 18-35)
+    else if (id >= 18 && id <= 35) {
+        // 内部索引 = id - 18
+        ModelSolver19_36* solver = ensureSolverGroup2(id - 18);
+        if (solver) return solver->calculateTheoreticalCurve(params, providedTime);
+    }
+
+    return ModelCurveData();
+}
+
+// 获取模型名称
+QString ModelManager::getModelTypeName(ModelType type)
+{
+    int id = (int)type;
+    if (id >= 0 && id <= 17) {
+        return ModelSolver01_06::getModelName((ModelSolver01_06::ModelType)id);
+    }
+    else if (id >= 18 && id <= 35) {
+        return ModelSolver19_36::getModelName((ModelSolver19_36::ModelType)(id - 18));
+    }
+    return "未知模型";
+}
+
 // 响应“选择模型”按钮点击
 void ModelManager::onSelectModelClicked()
 {
     ModelSelect dlg(m_mainWidget);
 
     // 计算当前模型的代码，以便在弹窗中回显选中状态
-    // Model_1(enum 0) -> modelwidget1
+    // 代码格式: modelwidgetX, 其中 X = ID + 1
     int currentId = (int)m_currentModelType + 1;
     QString currentCode = QString("modelwidget%1").arg(currentId);
-
-    // 设置当前状态到对话框
     dlg.setCurrentModelCode(currentCode);
 
     if (dlg.exec() == QDialog::Accepted) {
         QString code = dlg.getSelectedModelCode();
 
-        // 映射代码到枚举值并切换
-        // [双重孔隙 + 双重孔隙]
-        if (code == "modelwidget1") switchToModel(Model_1);
-        else if (code == "modelwidget2") switchToModel(Model_2);
-        else if (code == "modelwidget3") switchToModel(Model_3);
-        else if (code == "modelwidget4") switchToModel(Model_4);
-        else if (code == "modelwidget5") switchToModel(Model_5);
-        else if (code == "modelwidget6") switchToModel(Model_6);
-        // [均质 + 均质]
-        else if (code == "modelwidget7") switchToModel(Model_7);
-        else if (code == "modelwidget8") switchToModel(Model_8);
-        else if (code == "modelwidget9") switchToModel(Model_9);
-        else if (code == "modelwidget10") switchToModel(Model_10);
-        else if (code == "modelwidget11") switchToModel(Model_11);
-        else if (code == "modelwidget12") switchToModel(Model_12);
-        // [双重孔隙 + 均质]
-        else if (code == "modelwidget13") switchToModel(Model_13);
-        else if (code == "modelwidget14") switchToModel(Model_14);
-        else if (code == "modelwidget15") switchToModel(Model_15);
-        else if (code == "modelwidget16") switchToModel(Model_16);
-        else if (code == "modelwidget17") switchToModel(Model_17);
-        else if (code == "modelwidget18") switchToModel(Model_18);
-        else {
+        // 解析代码: modelwidgetX -> X
+        QString numStr = code;
+        numStr.remove("modelwidget");
+        bool ok;
+        int modelId = numStr.toInt(&ok);
+
+        // 有效范围 1-36
+        if (ok && modelId >= 1 && modelId <= 36) {
+            // 切换模型 (内部 ID = X - 1)
+            switchToModel((ModelType)(modelId - 1));
+        } else {
             qDebug() << "ModelManager: 未知的模型代码: " << code;
         }
     }
 }
 
-QString ModelManager::getModelTypeName(ModelType type)
-{
-    return ModelSolver01_06::getModelName(type);
-}
-
-void ModelManager::onWidgetCalculationCompleted(const QString &t,
-                                                const QMap<QString, double> &r) {
-    emit calculationCompleted(t, r);
-}
-
-void ModelManager::setHighPrecision(bool high) {
-    // 遍历所有已创建的组件设置精度
-    for(WT_ModelWidget* w : m_modelWidgets) {
-        if(w) w->setHighPrecision(high);
-    }
-    for(ModelSolver01_06* s : m_solvers) {
-        if(s) s->setHighPrecision(high);
-    }
-}
-
-void ModelManager::updateAllModelsBasicParameters()
-{
-    // 调用所有界面的重置参数槽函数，刷新显示 (如 phi, h 等变更后)
-    for(WT_ModelWidget* w : m_modelWidgets) {
-        if(w) QMetaObject::invokeMethod(w, "onResetParameters");
-    }
-}
-
-// [核心逻辑] 获取模型默认参数
+// [核心逻辑] 获取模型默认参数，适配新模型
 QMap<QString, double> ModelManager::getDefaultParameters(ModelType type)
 {
     QMap<QString, double> p;
@@ -229,30 +233,49 @@ QMap<QString, double> ModelManager::getDefaultParameters(ModelType type)
     p.insert("Lf", 20.0);
     p.insert("LfD", 0.02); // 无因次缝长
     p.insert("rm", 1000.0);
-
-    // 导压系数比，所有复合模型通用
-    p.insert("eta12", 0.2);
+    p.insert("eta12", 0.2); // 导压系数比
     p.insert("gamaD", 0.02); // 压敏系数
 
-    // 3. 介质参数配置逻辑
-    // 内区双孔: 1-6, 13-18
-    bool hasInnerDual = (type <= Model_6) || (type >= Model_13 && type <= Model_18);
-    // 外区双孔: 1-6
-    bool hasOuterDual = (type <= Model_6);
+    int id = (int)type;
 
-    if (hasInnerDual) {
+    // 3. 介质参数配置逻辑
+    bool hasInnerParams = false; // 是否需要内区参数 (omega1, lambda1)
+    bool hasOuterParams = false; // 是否需要外区参数 (omega2, lambda2)
+
+    if (id <= 17) {
+        // --- Group 1 (1-18) ---
+        // 内区双孔: 1-6 (0-5), 13-18 (12-17)
+        if (id <= 5 || (id >= 12 && id <= 17)) hasInnerParams = true;
+        // 外区双孔: 1-6 (0-5)
+        if (id <= 5) hasOuterParams = true;
+    }
+    else {
+        // --- Group 2 (19-36) ---
+        // 内区全是夹层型，都需要 w1, l1
+        hasInnerParams = true;
+
+        int subId = id - 18; // 相对索引 0-17
+        // 外区类型判定:
+        // 19-24 (sub 0-5): 外区夹层 -> 需要 w2, l2
+        // 25-30 (sub 6-11): 外区均质 -> 不需要 w2, l2
+        // 31-36 (sub 12-17): 外区双孔 -> 需要 w2, l2
+        if (subId <= 5 || subId >= 12) hasOuterParams = true;
+    }
+
+    if (hasInnerParams) {
         p.insert("omega1", 0.4);
         p.insert("lambda1", 1e-3);
     }
-    if (hasOuterDual) {
+    if (hasOuterParams) {
         p.insert("omega2", 0.08);
         p.insert("lambda2", 1e-4);
     }
 
-    // 4. 井储与表皮 (偶数 ID 为 Consider 变井储)
-    bool hasStorage = ((int)type % 2 == 0);
+    // 4. 井储与表皮 (规律: ID 为偶数时考虑井储)
+    // Model 1 (id 0): 考虑; Model 2 (id 1): 不考虑
+    bool hasStorage = (id % 2 == 0);
     if (hasStorage) {
-        p.insert("cD", 0.01);
+        p.insert("cD", 10);
         p.insert("S", 0.01);
     } else {
         p.insert("cD", 0.0);
@@ -260,10 +283,10 @@ QMap<QString, double> ModelManager::getDefaultParameters(ModelType type)
     }
 
     // 5. 边界半径 (无限大模型不需要)
-    // 无限大: 1, 2, 7, 8, 13, 14
-    bool isInfinite = (type == Model_1 || type == Model_2 ||
-                       type == Model_7 || type == Model_8 ||
-                       type == Model_13 || type == Model_14);
+    // 规律: 每6个一组的前2个是无限大
+    // (id) % 6 == 0 或 1 -> 无限大
+    int rem = id % 6;
+    bool isInfinite = (rem == 0 || rem == 1);
     if (!isInfinite) {
         p.insert("re", 20000.0);
     }
@@ -271,32 +294,36 @@ QMap<QString, double> ModelManager::getDefaultParameters(ModelType type)
     return p;
 }
 
-ModelCurveData ModelManager::calculateTheoreticalCurve(ModelType type,
-                                                       const QMap<QString, double>& params,
-                                                       const QVector<double>& providedTime)
-{
-    ModelSolver01_06* solver = ensureSolver(type);
-    if (solver) {
-        return solver->calculateTheoreticalCurve(params, providedTime);
+void ModelManager::setHighPrecision(bool high) {
+    // 遍历所有组件设置精度
+    for(WT_ModelWidget* w : m_modelWidgets) {
+        if(w) w->setHighPrecision(high);
     }
-    return ModelCurveData();
+    for(ModelSolver01_06* s : m_solversGroup1) {
+        if(s) s->setHighPrecision(high);
+    }
+    for(ModelSolver19_36* s : m_solversGroup2) {
+        if(s) s->setHighPrecision(high);
+    }
 }
 
-QVector<double> ModelManager::generateLogTimeSteps(int count, double startExp,
-                                                   double endExp) {
-    return ModelSolver01_06::generateLogTimeSteps(count, startExp, endExp);
+void ModelManager::updateAllModelsBasicParameters()
+{
+    // 调用所有界面的重置参数槽函数，刷新显示
+    for(WT_ModelWidget* w : m_modelWidgets) {
+        if(w) QMetaObject::invokeMethod(w, "onResetParameters");
+    }
 }
 
-void ModelManager::setObservedData(const QVector<double>& t, const QVector<double>& p,
-                                   const QVector<double>& d)
+// 缓存相关函数
+void ModelManager::setObservedData(const QVector<double>& t, const QVector<double>& p, const QVector<double>& d)
 {
     m_cachedObsTime = t;
     m_cachedObsPressure = p;
     m_cachedObsDerivative = d;
 }
 
-void ModelManager::getObservedData(QVector<double>& t, QVector<double>& p,
-                                   QVector<double>& d) const
+void ModelManager::getObservedData(QVector<double>& t, QVector<double>& p, QVector<double>& d) const
 {
     t = m_cachedObsTime;
     p = m_cachedObsPressure;
@@ -313,4 +340,13 @@ void ModelManager::clearCache()
 bool ModelManager::hasObservedData() const
 {
     return !m_cachedObsTime.isEmpty();
+}
+
+void ModelManager::onWidgetCalculationCompleted(const QString &t, const QMap<QString, double> &r) {
+    emit calculationCompleted(t, r);
+}
+
+QVector<double> ModelManager::generateLogTimeSteps(int count, double startExp, double endExp) {
+    // 复用 Solver01-06 的静态方法
+    return ModelSolver01_06::generateLogTimeSteps(count, startExp, endExp);
 }
