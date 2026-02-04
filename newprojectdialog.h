@@ -26,8 +26,13 @@ struct ProjectData {
     QString projectPath;    // 项目保存的根目录
     QString fullFilePath;   // 生成的具体项目文件全路径 (.wtproj)
 
-    // --- 第二页：主选项 / 油藏与井 ---
+    // --- 第二页：井参数 / 油藏参数 ---
     int testType;           // 0: 压力降落, 1: 压力恢复
+
+    // [新增] 水平井长度和裂缝条数
+    double horizLength;     // L
+    double fracCount;       // nf
+
     double productionRate;  // 测试产量
     double porosity;        // 孔隙度
     double thickness;       // 有效厚度

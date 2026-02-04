@@ -240,7 +240,7 @@ background-color: white;</string>
        <item>
         <widget class="QPushButton" name="btnSamplingSettings">
          <property name="text">
-          <string>数据抽样设置...</string>
+          <string>数据抽样设置</string>
          </property>
         </widget>
        </item>

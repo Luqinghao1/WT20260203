@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>650</width>
-    <height>520</height>
+    <height>600</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -178,9 +178,9 @@
        <item>
         <widget class="QGroupBox" name="groupBox">
          <property name="title">
-          <string>试井配置</string>
+          <string>井参数输入</string>
          </property>
-         <layout class="QFormLayout" name="formLayout_2">
+         <layout class="QGridLayout" name="gridLayout_Well">
           <property name="verticalSpacing">
            <number>12</number>
           </property>
@@ -205,13 +205,58 @@
             </item>
            </widget>
           </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="label_L">
+            <property name="text">
+             <string>水平井长度 (L):</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="spinL">
+            <property name="maximum">
+             <double>100000.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QLabel" name="label_unit_L">
+            <property name="text">
+             <string>m</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="label_nf">
+            <property name="text">
+             <string>裂缝条数 (nf):</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="spinNf">
+            <property name="decimals">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <double>1000.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="2">
+           <widget class="QLabel" name="label_unit_nf">
+            <property name="text">
+             <string>条</string>
+            </property>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>
        <item>
         <widget class="QGroupBox" name="groupBox_Reservoir">
          <property name="title">
-          <string>基本参数输入</string>
+          <string>油藏参数输入</string>
          </property>
          <layout class="QGridLayout" name="gridLayout_2">
           <property name="verticalSpacing">

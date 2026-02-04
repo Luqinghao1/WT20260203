@@ -4,8 +4,7 @@
  * 功能描述：
  * 1. 初始化界面样式和按钮事件连接。
  * 2. 实现"新建"、"打开"、"关闭"、"退出"的详细交互逻辑。
- * 3. 修复了双重弹窗问题：操作成功后不在此处弹窗，而是发送信号由主界面统一提示。
- * 4. 统一了所有交互弹窗的样式为白底黑字。
+ * 3. [修复] 正确传递新增的水平井长度和裂缝条数参数，解决了之前的编译错误。
  */
 
 #include "wt_projectwidget.h"
@@ -175,11 +174,18 @@ void WT_ProjectWidget::onNewProjectClicked()
     if (dialog->exec() == QDialog::Accepted) {
         ProjectData data = dialog->getProjectData();
 
-        // 更新全局参数
+        // [关键修复] 参数必须完整，顺序必须与 ModelParameter::setParameters 一致
         ModelParameter::instance()->setParameters(
-            data.porosity, data.thickness, data.viscosity,
-            data.volumeFactor, data.compressibility, data.productionRate,
-            data.wellRadius, data.fullFilePath
+            data.porosity,          // phi
+            data.thickness,         // h
+            data.viscosity,         // mu
+            data.volumeFactor,      // B
+            data.compressibility,   // Ct
+            data.productionRate,    // q
+            data.wellRadius,        // rw
+            data.horizLength,       // L (新增)
+            data.fracCount,         // nf (新增)
+            data.fullFilePath       // path
             );
 
         // 设置状态为已打开
@@ -227,11 +233,8 @@ void WT_ProjectWidget::onOpenProjectClicked()
 
         // 发送信号通知主界面 (主界面会弹出唯一的成功提示)
         emit projectOpened(false);
-
-        // [修改] 移除此处的弹窗，避免双重提示
-        // QMessageBox::information(this, "成功", "项目已成功加载！");
     } else {
-        // 失败情况保留弹窗，因为不会触发 newProjectCreated
+        // 失败情况保留弹窗
         QMessageBox msgBox;
         msgBox.setWindowTitle("错误");
         msgBox.setText("项目文件损坏或格式不正确，无法打开。");
@@ -268,7 +271,7 @@ void WT_ProjectWidget::onCloseProjectClicked()
     // 自定义按钮
     QPushButton *saveCloseBtn = msgBox.addButton("保存并关闭", QMessageBox::AcceptRole);
     QPushButton *directCloseBtn = msgBox.addButton("直接关闭", QMessageBox::DestructiveRole);
-    QPushButton *cancelBtn = msgBox.addButton("取消", QMessageBox::RejectRole);
+    msgBox.addButton("取消", QMessageBox::RejectRole); // 仅添加，不需保存变量
 
     msgBox.setDefaultButton(saveCloseBtn);
     msgBox.exec();
@@ -277,14 +280,11 @@ void WT_ProjectWidget::onCloseProjectClicked()
         // 选项1：保存并关闭
         if (saveCurrentProject()) {
             closeProjectInternal();
-            // [修改] 移除此处的弹窗，主界面接收到 projectClosed 信号后会统一提示
         }
     } else if (msgBox.clickedButton() == directCloseBtn) {
         // 选项2：直接关闭
         closeProjectInternal();
-        // [修改] 移除此处的弹窗
     }
-    // 选项3：取消 - 不做任何事
 }
 
 // 4. 点击“退出”按钮
@@ -308,7 +308,7 @@ void WT_ProjectWidget::onExitClicked()
 
     QPushButton *saveExitBtn = msgBox.addButton("保存并退出", QMessageBox::YesRole);
     QPushButton *directExitBtn = msgBox.addButton("直接退出", QMessageBox::NoRole);
-    QPushButton *cancelBtn = msgBox.addButton("取消", QMessageBox::RejectRole);
+    msgBox.addButton("取消", QMessageBox::RejectRole);
 
     msgBox.exec();
 
@@ -316,12 +316,10 @@ void WT_ProjectWidget::onExitClicked()
         // 保存后退出
         saveCurrentProject();
         QApplication::quit();
-        // 退出无需弹窗，程序直接结束
     } else if (msgBox.clickedButton() == directExitBtn) {
         // 直接退出
         QApplication::quit();
     }
-    // 取消则不执行任何操作
 }
 
 // 备用：文件读取逻辑
@@ -341,7 +339,6 @@ void WT_ProjectWidget::onLoadFileClicked()
 
     emit fileLoaded(filePath, fileType);
 
-    // 文件加载的提示保留在这里（因为主界面只是接收信号处理数据，可能不弹窗），但也应用样式
     QMessageBox msgBox;
     msgBox.setWindowTitle(tr("文件读取"));
     msgBox.setText(tr("文件已成功读取，正在准备显示数据..."));
@@ -358,7 +355,6 @@ bool WT_ProjectWidget::saveCurrentProject()
 {
     qDebug() << "正在保存项目:" << m_currentProjectFilePath;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    // 模拟保存逻辑...
     // ModelParameter::instance()->saveProject(m_currentProjectFilePath);
     QApplication::restoreOverrideCursor();
     return true;

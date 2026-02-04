@@ -1,5 +1,15 @@
+/*
+ * 文件名: newprojectdialog.cpp
+ * 文件作用: 新建项目对话框实现文件
+ * 功能描述:
+ * 1. 提供新建项目向导，收集项目信息、井参数、油藏参数和PVT参数。
+ * 2. 包含完整的界面美化样式表。
+ * 3. [修改] 增加了水平井长度和裂缝条数的输入处理，并更新了默认参数值。
+ */
+
 #include "newprojectdialog.h"
 #include "ui_newprojectdialog.h"
+#include "modelparameter.h" // [新增] 引入全局参数单例
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDir>
@@ -37,6 +47,7 @@ NewProjectDialog::~NewProjectDialog()
 
 void NewProjectDialog::loadModernStyle()
 {
+    // [完整保留原有样式表]
     QString style = R"(
         /* 全局设置 */
         QDialog {
@@ -224,18 +235,22 @@ void NewProjectDialog::initDefaultValues()
         ui->editPath->setText(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
     }
 
-    // Page 2: 油藏与井
+    // Page 2: 井与油藏参数 (使用新要求的默认值)
     ui->comboTestType->setCurrentIndex(1); // 压力恢复
-    ui->spinQ->setValue(50.0);
-    ui->spinPhi->setValue(0.05);
-    ui->spinH->setValue(20.0);
-    ui->spinRw->setValue(0.1);
 
-    // Page 3: PVT
+    // [修改] 设置默认值
+    ui->spinL->setValue(1000.0);    // 水平井长度 1000
+    ui->spinNf->setValue(4.0);      // 裂缝条数 4
+    ui->spinQ->setValue(10.0);      // 测试产量 10 (原50)
+    ui->spinPhi->setValue(0.05);    // 孔隙度 0.05
+    ui->spinH->setValue(10.0);      // 有效厚度 10 (原20)
+    ui->spinRw->setValue(0.1);      // 井筒半径 0.1
+
+    // Page 3: PVT (使用新要求的默认值)
     ui->comboUnits->setCurrentIndex((int)ProjectUnitType::Metric_SI);
-    ui->spinCt->setValue(5.0e-4);
-    ui->spinMu->setValue(0.5);
-    ui->spinB->setValue(1.2);
+    ui->spinCt->setValue(0.05);     // 综合压缩系数 0.05 (原5e-4)
+    ui->spinMu->setValue(5.0);      // 粘度 5 (原0.5)
+    ui->spinB->setValue(1.2);       // 体积系数 1.2 (原1.2)
 
     updateUnitLabels(ProjectUnitType::Metric_SI);
 }
@@ -267,6 +282,7 @@ void NewProjectDialog::on_comboUnits_currentIndexChanged(int index)
 void NewProjectDialog::updateUnitLabels(ProjectUnitType unit)
 {
     if (unit == ProjectUnitType::Metric_SI) {
+        ui->label_unit_L->setText("m");  // [新增]
         ui->label_unit_q->setText("m³/d");
         ui->label_unit_h->setText("m");
         ui->label_unit_rw->setText("m");
@@ -274,6 +290,7 @@ void NewProjectDialog::updateUnitLabels(ProjectUnitType unit)
         ui->label_unit_mu->setText("mPa·s");
         ui->label_unit_B->setText("m³/m³");
     } else {
+        ui->label_unit_L->setText("ft"); // [新增]
         ui->label_unit_q->setText("STB/d");
         ui->label_unit_h->setText("ft");
         ui->label_unit_rw->setText("ft");
@@ -296,6 +313,7 @@ void NewProjectDialog::convertValues(ProjectUnitType from, ProjectUnitType to)
     double rw = ui->spinRw->value();
     double ct = ui->spinCt->value();
     double q = ui->spinQ->value();
+    double L = ui->spinL->value(); // [新增]
 
     if (from == ProjectUnitType::Metric_SI && to == ProjectUnitType::Field_Unit) {
         // SI -> Field
@@ -303,6 +321,7 @@ void NewProjectDialog::convertValues(ProjectUnitType from, ProjectUnitType to)
         ui->spinRw->setValue(rw * M_TO_FT);
         ui->spinCt->setValue(ct / MPA_TO_PSI);
         ui->spinQ->setValue(q * M3D_TO_STBD);
+        ui->spinL->setValue(L * M_TO_FT); // [新增]
     }
     else if (from == ProjectUnitType::Field_Unit && to == ProjectUnitType::Metric_SI) {
         // Field -> SI
@@ -310,6 +329,7 @@ void NewProjectDialog::convertValues(ProjectUnitType from, ProjectUnitType to)
         ui->spinRw->setValue(rw / M_TO_FT);
         ui->spinCt->setValue(ct * MPA_TO_PSI);
         ui->spinQ->setValue(q / M3D_TO_STBD);
+        ui->spinL->setValue(L / M_TO_FT); // [新增]
     }
 }
 
@@ -359,6 +379,10 @@ bool NewProjectDialog::createProjectStructure()
     m_projectData.testDate = ui->dateEdit->dateTime();
     m_projectData.currentUnitSystem = (ProjectUnitType)ui->comboUnits->currentIndex();
 
+    // [新增] 读取新参数
+    m_projectData.horizLength = ui->spinL->value();
+    m_projectData.fracCount = ui->spinNf->value();
+
     m_projectData.productionRate = ui->spinQ->value();
     m_projectData.porosity = ui->spinPhi->value();
     m_projectData.thickness = ui->spinH->value();
@@ -368,9 +392,23 @@ bool NewProjectDialog::createProjectStructure()
     m_projectData.viscosity = ui->spinMu->value();
     m_projectData.volumeFactor = ui->spinB->value();
 
-    // [修改] 文件后缀名改为 .pwt
     QString fileName = m_projectData.projectName + ".pwt";
     m_projectData.fullFilePath = QDir(projectDirPath).filePath(fileName);
+
+    // [关键] 将所有参数（包括新增的 L 和 nf）保存到全局单例
+    // 注意：setParameters 的参数顺序必须与 ModelParameter::setParameters 定义一致
+    ModelParameter::instance()->setParameters(
+        m_projectData.porosity,
+        m_projectData.thickness,
+        m_projectData.viscosity,
+        m_projectData.volumeFactor,
+        m_projectData.compressibility,
+        m_projectData.productionRate,
+        m_projectData.wellRadius,
+        m_projectData.horizLength, // [新增]
+        m_projectData.fracCount,   // [新增]
+        m_projectData.fullFilePath
+        );
 
     saveProjectFile(m_projectData.fullFilePath, m_projectData);
 
@@ -393,6 +431,8 @@ void NewProjectDialog::saveProjectFile(const QString &filePath, const ProjectDat
     reservoir["porosity"] = data.porosity;
     reservoir["thickness"] = data.thickness;
     reservoir["wellRadius"] = data.wellRadius;
+    reservoir["horizLength"] = data.horizLength; // [新增]
+    reservoir["fracCount"] = data.fracCount;     // [新增]
 
     QJsonObject pvt;
     pvt["compressibility"] = data.compressibility;
@@ -409,4 +449,3 @@ void NewProjectDialog::saveProjectFile(const QString &filePath, const ProjectDat
         file.close();
     }
 }
-
