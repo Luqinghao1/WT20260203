@@ -2,9 +2,9 @@
  * 文件名: modelparameter.h
  * 文件作用: 项目参数单例类头文件
  * 功能描述:
- * 1. 管理项目核心数据（孔隙度、粘度等）和文件路径。
+ * 1. 管理项目核心数据（包括新增的水平井长度、裂缝条数及原有的孔隙度、粘度等）和文件路径。
  * 2. 负责 _chart.json (图表) 和 _date.json (表格) 的路径生成和存取。
- * 3. 确保项目保存和加载时，数据表格的内容能被正确持久化。
+ * 3. 作为全局参数中心，供新建项目和恢复默认值使用。
  */
 
 #ifndef MODELPARAMETER_H
@@ -29,7 +29,6 @@ public:
     // ========================================================================
 
     // 加载项目文件 (.pwt)
-    // 作用：读取主文件配置，并自动寻找同目录下的 _date.json 加载表格数据
     bool loadProject(const QString& filePath);
 
     // 保存基础参数到 .pwt 文件
@@ -43,11 +42,14 @@ public:
     bool hasLoadedProject() const { return m_hasLoaded; }
 
     // ========================================================================
-    // 基础参数存取
+    // 基础参数存取 (全局物理参数)
     // ========================================================================
 
-    void setParameters(double phi, double h, double mu, double B, double Ct, double q, double rw, const QString& path);
+    // [修改] 增加 L (水平井长度) 和 nf (裂缝条数) 的设置接口
+    void setParameters(double phi, double h, double mu, double B, double Ct,
+                       double q, double rw, double L, double nf, const QString& path);
 
+    // Getters
     double getPhi() const { return m_phi; }
     double getH() const { return m_h; }
     double getMu() const { return m_mu; }
@@ -56,12 +58,16 @@ public:
     double getQ() const { return m_q; }
     double getRw() const { return m_rw; }
 
+    // [新增] 获取新增参数
+    double getL() const { return m_L; }   // 水平井长度
+    double getNf() const { return m_nf; } // 裂缝条数
+
     // 保存拟合结果
     void saveFittingResult(const QJsonObject& fittingData);
     QJsonObject getFittingResult() const;
 
     // ========================================================================
-    // 独立数据文件存取 (关键修复部分)
+    // 独立数据文件存取
     // ========================================================================
 
     // 保存绘图数据到 "_chart.json"
@@ -69,17 +75,11 @@ public:
     QJsonArray getPlottingData() const;
 
     // 保存表格数据到 "_date.json"
-    // DataEditorWidget 调用此函数将表格内容写入磁盘
     void saveTableData(const QJsonArray& tableData);
-
-
-    // 重置所有项目数据（清空缓存）
-    void resetAllData();
-
-
-    // 获取表格数据
-    // DataEditorWidget 加载项目时调用此函数恢复界面
     QJsonArray getTableData() const;
+
+    // 重置所有项目数据（恢复为默认值）
+    void resetAllData();
 
 private:
     explicit ModelParameter(QObject* parent = nullptr);
@@ -89,17 +89,21 @@ private:
     QString m_projectPath;
     QString m_projectFilePath;
 
-    // 缓存完整的JSON对象，包含从各个子文件读取的内容
+    // 缓存完整的JSON对象
     QJsonObject m_fullProjectData;
 
-    // 基础参数变量
-    double m_phi;
-    double m_h;
-    double m_mu;
-    double m_B;
-    double m_Ct;
-    double m_q;
-    double m_rw;
+    // 基础物理参数变量
+    double m_phi;   // 孔隙度
+    double m_h;     // 有效厚度
+    double m_mu;    // 粘度
+    double m_B;     // 体积系数
+    double m_Ct;    // 综合压缩系数
+    double m_q;     // 测试产量
+    double m_rw;    // 井筒半径
+
+    // [新增]
+    double m_L;     // 水平井长度
+    double m_nf;    // 裂缝条数
 
     // 辅助：获取附属文件的绝对路径
     QString getPlottingDataFilePath() const;
